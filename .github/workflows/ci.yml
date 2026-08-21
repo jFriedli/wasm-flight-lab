@@ -11,7 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: {components: rustfmt, clippy}
+        with:
+          components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -37,4 +38,3 @@ jobs:
         working-directory: web
       - run: npm run test:e2e
         working-directory: web
-
