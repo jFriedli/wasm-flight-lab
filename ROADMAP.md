@@ -1,7 +1,7 @@
 # Roadmap
 
 - M2 complete: rate/angle PID loops, tuning telemetry, generic persisted Gamepad calibration and chase/FPV/free cameras.
-- M3: full workshop, battery/propeller/payload editors, calculated inertia, versioned IndexedDB save and validated import/export.
+- M3 complete: workshop, battery/propeller/payload editors, calculated inertia, local versioned save and validated import/export.
 - M4–M5: fixed-wing trainer, control surfaces, QuadPlane and continuously tilting tiltrotor.
 - M6: Alpine valley, deterministic gust/turbulence fields, ridge/valley wind zones and atmospheric presets.
 - M7–M8: independently clocked IMU/GPS/barometer/airspeed, EKF lab, failures, richer raycast LIDAR, bounded graphs and scenario reports.

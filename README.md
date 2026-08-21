@@ -6,7 +6,7 @@ An open-source aircraft-design and flight-dynamics lab whose standard simulator 
 
 ## Current vertical slice
 
-The current M2 build includes a controllable component-based quad, 250 Hz fixed-step rigid-body integration, per-motor forces and torques, density-aware propulsion, a Rust rate/angle flight controller, saturation-aware X mixer, calibrated Gamepad input, three cameras, controller telemetry and live PID tuning. See [STATUS.md](STATUS.md) for exact scope.
+The M3 build adds a complete quad workshop to the controllable M2 flight lab. Frame, motors, propellers, battery position/capacity, and payloads feed a versioned Rust vehicle definition. Mass, CG, diagonal inertia, static hover trim, endurance estimates, warnings, motor lag, battery drain and voltage sag are physical runtime inputs—not display-only values. Designs can be saved locally or safely imported/exported, then flown immediately. See [STATUS.md](STATUS.md) for exact scope.
 
 ## Develop
 
@@ -34,6 +34,8 @@ Keyboard: W/S gradually changes collective, A/D commands roll, arrow up/down com
 The Gamepad panel supports ordinary pads and USB RC/FPV radios exposed by the browser Gamepad API. Map axes, capture centres and travel, then set inversion, deadzone and expo. Validated values stay in local browser storage. Disconnect zeros attitude commands and gently reduces throttle.
 
 CHASE, aircraft-mounted FPV and mouse-orbit FREE cameras are available from the viewport toolbar. Controller P/I/D values take effect live; the bounded graph compares target rate, measured rate and output.
+
+BUILD opens the workshop without reloading. Select a component, edit bounded SI values, inspect the model and magenta CG marker, then choose TEST FLIGHT. Save/rename by editing the vehicle name and pressing Save; Duplicate and Delete manage local copies. Exported `.flightlab.json` files are human-readable, versioned, size-limited and validated again in Rust before use.
 
 ## Static deployment and base paths
 
