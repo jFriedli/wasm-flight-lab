@@ -1,6 +1,7 @@
 /target
 /web/node_modules
 /web/dist
+/web/LICENSE
 /web/src/wasm
 **/playwright-report
 **/test-results
