@@ -6,7 +6,7 @@ An open-source aircraft-design and flight-dynamics lab whose standard simulator 
 
 ## Current vertical slice
 
-The v0.1 foundation includes a flyable component-based quad, 250 Hz fixed-step rigid-body integration, per-motor forces and torques, density-aware propulsion, drag, ground impact, a Rust PID primitive, a procedural test center, force visualization, keyboard control, and live engineering values. See [STATUS.md](STATUS.md) for exact scope.
+The current M2 build includes a controllable component-based quad, 250 Hz fixed-step rigid-body integration, per-motor forces and torques, density-aware propulsion, a Rust rate/angle flight controller, saturation-aware X mixer, calibrated Gamepad input, three cameras, controller telemetry and live PID tuning. See [STATUS.md](STATUS.md) for exact scope.
 
 ## Develop
 
@@ -22,14 +22,18 @@ Run all local checks:
 
 ```sh
 cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cd web && npm run lint && npm run typecheck && npm test && npm run build
 npx playwright install chromium
 npm run test:e2e
 ```
 
-Keyboard: W/S collective, A/D roll, arrow up/down pitch, R reset. Every control also has an accessible UI equivalent where applicable; Gamepad calibration is planned.
+Keyboard: W/S gradually changes collective, A/D commands roll, arrow up/down commands pitch, Q/E commands yaw, Space pauses and R resets. Keyboard attitude commands use simulation-clock slew and expo. ACRO provides direct rate control; ANGLE self-levels roll and pitch.
+
+The Gamepad panel supports ordinary pads and USB RC/FPV radios exposed by the browser Gamepad API. Map axes, capture centres and travel, then set inversion, deadzone and expo. Validated values stay in local browser storage. Disconnect zeros attitude commands and gently reduces throttle.
+
+CHASE, aircraft-mounted FPV and mouse-orbit FREE cameras are available from the viewport toolbar. Controller P/I/D values take effect live; the bounded graph compares target rate, measured rate and output.
 
 ## Static deployment and base paths
 
@@ -45,4 +49,3 @@ The Pages workflow deploys the first form automatically. No root-relative produc
 For future `jFriedli.github.io` integration, the preferred approach is to download this repository's versioned Pages/build artifact and copy its contents into `labs/flight/` during the website build. This keeps histories and toolchains independent. A git submodule is an alternative: it pins source precisely, but adds clone/update friction and couples the parent build to this repository. Neither requires merging this source tree, and this task does not modify the website repository.
 
 Educational model only: this is not certified engineering or flight-safety software. MIT licensed; current visuals are procedural and have no third-party asset licenses.
-
