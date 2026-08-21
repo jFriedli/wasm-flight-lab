@@ -1,0 +1,1 @@
+import{test,expect}from'@playwright/test';test('WASM simulation starts',async({page})=>{await page.goto('/');await expect(page.getByText('WASM FLIGHT LAB')).toBeVisible();await expect(page.getByText(/Simulation running locally/)).toBeVisible();await expect(page.locator('#alt')).not.toHaveText('—');});
