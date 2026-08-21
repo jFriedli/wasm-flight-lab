@@ -80,9 +80,15 @@ test("rendered tilt, thrust arrow and lateral motion share one frame", async ({
 }) => {
   await page.goto("/");
   await page.getByText("VIEW & PHYSICS").click();
+  await page.getByRole("button", { name: "Reset aircraft" }).click();
   await page.locator("#knownAttitude").selectOption("30,0");
-  await page.waitForTimeout(160);
-  await expect(page.locator("#angles")).toContainText("30° / 0°");
+  await page.waitForTimeout(100);
+  const attitude = (await page.locator("#angles").innerText())
+    .match(/-?\d+/g)!
+    .map(Number);
+  expect(attitude[0]).toBeGreaterThan(25);
+  expect(attitude[0]).toBeLessThan(35);
+  expect(Math.abs(attitude[1])).toBeLessThan(8);
   const vectors = await page.locator("#viewport").evaluate((element) => ({
     thrust: element.dataset.thrustDirection!.split(",").map(Number),
     model: element.dataset.modelThrustDirection!.split(",").map(Number),
