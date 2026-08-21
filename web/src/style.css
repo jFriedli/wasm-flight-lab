@@ -146,6 +146,36 @@ main[hidden] {
   text-align: center;
   text-shadow: 0 1px 2px #000;
 }
+.mouse-controls {
+  position: absolute;
+  z-index: 3;
+  left: 1rem;
+  bottom: 3.8rem;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: .3rem .6rem;
+  align-items: center;
+  padding: .55rem;
+  background: #07121cda;
+  border: 1px solid #39515e;
+  font-size: .65rem;
+}
+.mouse-controls label { margin: 0; }
+.mouse-controls input { width: 100px; }
+#mouseStatus { color: #7da4b6; }
+#virtualStick {
+  grid-column: 1 / -1;
+  justify-self: center;
+  width: 88px;
+  height: 88px;
+  border: 1px solid #55717d;
+  border-radius: 50%;
+  position: relative;
+  background: linear-gradient(90deg,transparent 49%,#304653 50%,transparent 51%),linear-gradient(transparent 49%,#304653 50%,transparent 51%);
+}
+#virtualStick i { position:absolute; width:12px; height:12px; border-radius:50%; background:#3de3ff; left:37px; top:37px; box-shadow:0 0 10px #3de3ff; }
+#virtualStick b { position:absolute; width:130px; left:-21px; top:-15px; text-align:center; color:#7895a2; font-size:.52rem; }
+.stall-warning { position:absolute; z-index:4; top:4.2rem; left:50%; transform:translateX(-50%); padding:.5rem .8rem; color:#07121c; background:#ff6f91; font-weight:900; letter-spacing:.12em; }
 aside {
   background: #0b1a25;
   border-left: 1px solid #263b47;

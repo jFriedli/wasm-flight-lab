@@ -6,7 +6,7 @@ An open-source aircraft-design and flight-dynamics lab whose standard simulator 
 
 ## Current vertical slice
 
-The M3 build adds a complete quad workshop to the controllable M2 flight lab. Frame, motors, propellers, battery position/capacity, and payloads feed a versioned Rust vehicle definition. Mass, CG, diagonal inertia, static hover trim, endurance estimates, warnings, motor lag, battery drain and voltage sag are physical runtime inputs—not display-only values. Designs can be saved locally or safely imported/exported, then flown immediately. See [STATUS.md](STATUS.md) for exact scope.
+The M4 build adds RC-like desktop control and a physically simulated Fixed Wing Trainer to the quad workshop. Individual wings and tail surfaces derive lift, drag, stall and moments from local air-relative velocity; aileron, elevator and rudder authority grows with airspeed. Frame, propulsion, battery, payload and aerodynamic parameters remain editable physical runtime inputs—not display-only values. See [STATUS.md](STATUS.md) for exact scope.
 
 ## Develop
 
@@ -29,13 +29,13 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Keyboard: W/S gradually changes collective, A/D commands roll, arrow up/down commands pitch, Q/E commands yaw, Space pauses and R resets. Keyboard attitude commands use simulation-clock slew and expo. ACRO provides direct rate control; ANGLE self-levels roll and pitch.
+Default desktop control follows a Mode-2 transmitter: W/S gradually changes persistent throttle, A/D commands yaw/rudder, and the pointer-locked virtual right stick controls roll and pitch. Mouse up is stick forward/nose down; mouse down is nose up. Click **ENABLE MOUSE FLIGHT** explicitly and press Escape to release. Arrow keys remain the keyboard-only roll/pitch fallback. Sensitivity and spring return are adjustable; all sources feed the same normalized, shaped controller input. ACRO and ANGLE apply to multicopters; the trainer uses manual aerodynamic surfaces.
 
 The Gamepad panel supports ordinary pads and USB RC/FPV radios exposed by the browser Gamepad API. Map axes, capture centres and travel, then set inversion, deadzone and expo. Validated values stay in local browser storage. Disconnect zeros attitude commands and gently reduces throttle.
 
 CHASE, aircraft-mounted FPV and mouse-orbit FREE cameras are available from the viewport toolbar. Controller P/I/D values take effect live; the bounded graph compares target rate, measured rate and output.
 
-BUILD opens the workshop without reloading. Select a component, edit bounded SI values, inspect the model and magenta CG marker, then choose TEST FLIGHT. Save/rename by editing the vehicle name and pressing Save; Duplicate and Delete manage local copies. Exported `.flightlab.json` files are human-readable, versioned, size-limited and validated again in Rust before use.
+BUILD opens the workshop without reloading. Select Beginner Quad, Freestyle Quad, or Fixed Wing Trainer; edit bounded SI values, inspect the model and magenta CG marker, then choose TEST FLIGHT. The trainer exposes wing/tail area, span, chord, incidence, lift slope, stall angle, drag, deflection and effectiveness plus shared propulsion/battery/payload components. Exported `.flightlab.json` files are human-readable, versioned, size-limited and validated again in Rust before use.
 
 ## Static deployment and base paths
 

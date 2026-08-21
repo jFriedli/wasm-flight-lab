@@ -1,6 +1,16 @@
 import { clamp } from "./model";
 
 export type AxisName = "roll" | "pitch" | "yaw" | "throttle";
+export interface NormalizedControlInput {
+  throttle: number;
+  roll: number;
+  pitch: number;
+  yaw: number;
+}
+export interface VirtualStick {
+  roll: number;
+  pitch: number;
+}
 export interface AxisCalibration {
   source: number;
   min: number;
@@ -104,6 +114,38 @@ export function slew(
   const rate = Math.abs(target) > Math.abs(current) ? attack : release;
   const delta = Math.max(0, rate) * clamp(dt, 0, 0.1);
   return current + clamp(target - current, -delta, delta);
+}
+export function springVirtualStick(
+  stick: VirtualStick,
+  returnSpeed: number,
+  dt: number,
+): VirtualStick {
+  return {
+    roll: slew(stick.roll, 0, returnSpeed, returnSpeed, dt),
+    pitch: slew(stick.pitch, 0, returnSpeed, returnSpeed, dt),
+  };
+}
+export function applyMouseDelta(
+  stick: VirtualStick,
+  movementX: number,
+  movementY: number,
+  sensitivity: number,
+): VirtualStick {
+  const safe = Number.isFinite(sensitivity)
+    ? clamp(sensitivity, 0.0001, 0.02)
+    : 0.0025;
+  return {
+    roll: clamp(
+      stick.roll + (Number.isFinite(movementX) ? movementX : 0) * safe,
+      -1,
+      1,
+    ),
+    pitch: clamp(
+      stick.pitch + (Number.isFinite(movementY) ? movementY : 0) * safe,
+      -1,
+      1,
+    ),
+  };
 }
 export function normalizeAxis(
   raw: number,

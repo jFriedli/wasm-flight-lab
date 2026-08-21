@@ -19,7 +19,7 @@ export function setupWorkshop(
   const panel = document.createElement("section");
   panel.id = "buildView";
   panel.hidden = true;
-  panel.innerHTML = `<div class="build-components"><h2>COMPONENTS</h2><label>Preset <select id="vehiclePreset"><option value="beginner">Beginner Quad</option><option value="freestyle">Freestyle Quad</option></select></label><div id="componentList"></div><button id="addPayload">+ Payload</button><hr><label>Saved designs <select id="savedDesigns"><option value="">—</option></select></label><div class="button-row"><button id="saveDesign">Save</button><button id="duplicateDesign">Duplicate</button><button id="deleteDesign">Delete</button></div><div class="button-row"><button id="exportDesign">Export</button><button id="importDesign">Import</button><input id="importFile" type="file" accept=".json,.flightlab.json,application/json" hidden></div></div><div class="build-preview"><div id="buildCanvas"></div><div id="componentEditor"></div></div><div class="build-metrics"><h2>ENGINEERING METRICS</h2><div id="metrics"></div><h2>DESIGN GUIDANCE</h2><div id="designWarnings"></div><button id="testFlight" class="primary">TEST FLIGHT</button><p id="buildStatus" class="note"></p></div>`;
+  panel.innerHTML = `<div class="build-components"><h2>COMPONENTS</h2><label>Preset <select id="vehiclePreset"><option value="beginner">Beginner Quad</option><option value="freestyle">Freestyle Quad</option><option value="trainer">Fixed Wing Trainer</option></select></label><div id="componentList"></div><button id="addPayload">+ Payload</button><hr><label>Saved designs <select id="savedDesigns"><option value="">—</option></select></label><div class="button-row"><button id="saveDesign">Save</button><button id="duplicateDesign">Duplicate</button><button id="deleteDesign">Delete</button></div><div class="button-row"><button id="exportDesign">Export</button><button id="importDesign">Import</button><input id="importFile" type="file" accept=".json,.flightlab.json,application/json" hidden></div></div><div class="build-preview"><div id="buildCanvas"></div><div id="componentEditor"></div></div><div class="build-metrics"><h2>ENGINEERING METRICS</h2><div id="metrics"></div><h2>DESIGN GUIDANCE</h2><div id="designWarnings"></div><button id="testFlight" class="primary">TEST FLIGHT</button><p id="buildStatus" class="note"></p></div>`;
   root.append(panel);
   let definition = JSON.parse(
       sim.vehicle_definition_json(),
@@ -70,7 +70,7 @@ export function setupWorkshop(
     `<label>${label}<input data-path="${path}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"></label>`;
   function componentList() {
     const list = panel.querySelector("#componentList")!;
-    list.innerHTML = `<button data-component="frame">Frame</button>${definition.motors.map((_, i) => `<button data-component="motor-${i}">Motor ${i + 1}</button>`).join("")}<button data-component="battery">Battery</button>${definition.payloads.map((p, i) => `<button data-component="payload-${i}">${escapeText(p.name)}</button>`).join("")}`;
+    list.innerHTML = `<button data-component="frame">Frame</button>${definition.motors.map((_, i) => `<button data-component="motor-${i}">Motor ${i + 1}</button>`).join("")}${(definition.aeroSurfaces ?? []).map((s, i) => `<button data-component="surface-${i}">${escapeText(s.name)}</button>`).join("")}<button data-component="battery">Battery</button>${definition.payloads.map((p, i) => `<button data-component="payload-${i}">${escapeText(p.name)}</button>`).join("")}`;
     list
       .querySelectorAll<HTMLButtonElement>("[data-component]")
       .forEach((button) => {
@@ -94,6 +94,10 @@ export function setupWorkshop(
       const i = Number(selected.split("-")[1]),
         m = definition.motors[i];
       e.innerHTML = `<h2>MOTOR ${i + 1}</h2><div class="xyz">${m.positionM.map((v, j) => numberInput(`Position ${"XYZ"[j]} m`, `motors.${i}.positionM.${j}`, v, -10, 10)).join("")}</div><div class="xyz">${m.directionBody.map((v, j) => numberInput(`Direction ${"XYZ"[j]}`, `motors.${i}.directionBody.${j}`, v, -1, 1, 0.1)).join("")}</div>${numberInput("Spin direction (-1/+1)", `motors.${i}.spin`, m.spin, -1, 1, 2)}${numberInput("Maximum thrust N", `motors.${i}.baseMaxThrustN`, m.baseMaxThrustN, 0, 10000)}${numberInput("Maximum power W", `motors.${i}.maxPowerW`, m.maxPowerW, 1, 100000, 1)}${numberInput("Motor mass kg", `motors.${i}.massKg`, m.massKg, 0.001, 10, 0.001)}${numberInput("Reaction torque Nm", `motors.${i}.reactionTorqueNm`, m.reactionTorqueNm, 0, 100)}${numberInput("Spin-up time s", `motors.${i}.spinUpTimeS`, m.spinUpTimeS, 0.005, 5, 0.005)}${numberInput("Spin-down time s", `motors.${i}.spinDownTimeS`, m.spinDownTimeS, 0.005, 5, 0.005)}<h2>PROPELLER</h2>${numberInput("Diameter m", `motors.${i}.propeller.diameterM`, m.propeller.diameterM, 0.02, 2)}${numberInput("Pitch m", `motors.${i}.propeller.pitchM`, m.propeller.pitchM, 0.01, 1)}${numberInput("Blades", `motors.${i}.propeller.bladeCount`, m.propeller.bladeCount, 1, 8, 1)}${numberInput("Propeller mass kg", `motors.${i}.propeller.massKg`, m.propeller.massKg, 0.001, 5, 0.001)}${numberInput("Efficiency estimate", `motors.${i}.propeller.efficiency`, m.propeller.efficiency, 0.1, 1, 0.01)}`;
+    } else if (selected.startsWith("surface-")) {
+      const i = Number(selected.split("-")[1]),
+        s = definition.aeroSurfaces![i];
+      e.innerHTML = `<h2>${escapeText(s.name).toUpperCase()}</h2><div class="xyz">${s.positionM.map((v, j) => numberInput(`Position ${"XYZ"[j]} m`, `aeroSurfaces.${i}.positionM.${j}`, v, -10, 10)).join("")}</div>${numberInput("Span m", `aeroSurfaces.${i}.spanM`, s.spanM, 0.05, 20)}${numberInput("Chord m", `aeroSurfaces.${i}.chordM`, s.chordM, 0.02, 5)}${numberInput("Area m²", `aeroSurfaces.${i}.areaM2`, s.areaM2, 0.005, 20)}${numberInput("Incidence °", `aeroSurfaces.${i}.incidenceDeg`, s.incidenceDeg, -30, 30, 0.5)}${numberInput("Lift slope /rad", `aeroSurfaces.${i}.liftSlopePerRad`, s.liftSlopePerRad, 0.1, 12, 0.1)}${numberInput("Stall angle °", `aeroSurfaces.${i}.stallAngleDeg`, s.stallAngleDeg, 5, 45, 0.5)}${numberInput("CD0", `aeroSurfaces.${i}.cd0`, s.cd0, 0.001, 2, 0.005)}${numberInput("Induced drag k", `aeroSurfaces.${i}.inducedDragK`, s.inducedDragK, 0, 2, 0.005)}${numberInput("Max deflection °", `aeroSurfaces.${i}.maxDeflectionDeg`, s.maxDeflectionDeg, 0, 60, 0.5)}${numberInput("Control effectiveness", `aeroSurfaces.${i}.controlEffectiveness`, s.controlEffectiveness, 0, 2, 0.05)}`;
     } else if (selected === "battery") {
       const b = definition.battery;
       e.innerHTML = `<h2>BATTERY</h2>${numberInput("Cells", "battery.cells", b.cells, 1, 16, 1)}${numberInput("Capacity mAh", "battery.capacityMah", b.capacityMah, 100, 100000, 50)}${numberInput("Mass kg", "battery.massKg", b.massKg, 0.02, 100, 0.01)}<div class="xyz">${b.positionM.map((v, j) => numberInput(`Position ${"XYZ"[j]} m`, `battery.positionM.${j}`, v, -10, 10)).join("")}</div>${numberInput("Internal resistance Ω", "battery.internalResistanceOhm", b.internalResistanceOhm, 0, 2, 0.005)}${numberInput("Maximum discharge C", "battery.maxDischargeC", b.maxDischargeC, 1, 200, 1)}`;
@@ -120,7 +124,10 @@ export function setupWorkshop(
             input.dataset.path!,
             input.type === "number" ? Number(input.value) : input.value,
           );
-          if (input.dataset.path === "frame.armLengthM") {
+          if (
+            input.dataset.path === "frame.armLengthM" &&
+            definition.vehicleClass !== "fixedWing"
+          ) {
             for (const motor of definition.motors) {
               motor.positionM[0] =
                 Math.sign(motor.positionM[0]) * Number(input.value);
@@ -161,6 +168,10 @@ export function setupWorkshop(
           }),
         );
       mesh.position.copy(position);
+      mesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        bodyVectorToModel(motor.directionBody).normalize(),
+      );
       mesh.userData.component = `motor-${i}`;
       vehicleGroup.add(mesh);
       const arm = new THREE.Line(
@@ -171,6 +182,20 @@ export function setupWorkshop(
         new THREE.LineBasicMaterial({ color: 0x7895a2 }),
       );
       vehicleGroup.add(arm);
+    });
+    (definition.aeroSurfaces ?? []).forEach((surface, i) => {
+      const geometry =
+        surface.plane === "horizontal"
+          ? new THREE.BoxGeometry(surface.spanM, 0.012, surface.chordM)
+          : new THREE.BoxGeometry(0.012, surface.spanM, surface.chordM);
+      const mesh = new THREE.Mesh(
+        geometry,
+        new THREE.MeshStandardMaterial({
+          color: selected === `surface-${i}` ? 0x3de3ff : 0xd6e5ea,
+        }),
+      );
+      mesh.position.copy(bodyVectorToModel(surface.positionM));
+      vehicleGroup.add(mesh);
     });
     definition.payloads.forEach((payload, i) => {
       const mesh = new THREE.Mesh(
@@ -194,8 +219,12 @@ export function setupWorkshop(
     canvas.dataset.motor0 = definition.motors[0].positionM.join(",");
   }
   function metricsView(m: EngineeringMetrics) {
+    const flightMetrics =
+      definition.vehicleClass === "fixedWing"
+        ? `<dt>Wing area</dt><dd>${m.wingAreaM2.toFixed(3)} m²</dd><dt>Aspect ratio</dt><dd>${m.aspectRatio.toFixed(2)}</dd><dt>Wing loading</dt><dd>${m.wingLoadingKgM2.toFixed(2)} kg/m²</dd><dt>Stall speed</dt><dd>${m.estimatedStallSpeedMps.toFixed(1)} m/s est.</dd><dt>Power / weight</dt><dd>${m.powerToWeightWKg.toFixed(0)} W/kg</dd><dt>CG / MAC</dt><dd>${(m.cgMacFraction * 100).toFixed(0)}%</dd>`
+        : `<dt>Thrust / weight</dt><dd>${m.thrustToWeight.toFixed(2)}</dd><dt>Hover throttle</dt><dd>${(m.hoverThrottle * 100).toFixed(1)}%</dd><dt>Hover current</dt><dd>${m.hoverCurrentA.toFixed(1)} A</dd><dt>Hover endurance</dt><dd>${m.hoverFlightTimeMin.toFixed(1)} min est.</dd><dt>Level-hover motors</dt><dd>${m.hoverMotorOutputs.map((v) => `${(v * 100).toFixed(0)}%`).join(" / ")}</dd>`;
     panel.querySelector("#metrics")!.innerHTML =
-      `<dl><dt>Total mass</dt><dd>${m.totalMassKg.toFixed(3)} kg</dd><dt>CG X/Y/Z</dt><dd>${m.centerOfMassM.map((v) => v.toFixed(3)).join(" / ")} m</dd><dt>Inertia X/Y/Z</dt><dd>${m.inertiaKgM2.map((v) => v.toFixed(4)).join(" / ")}</dd><dt>Maximum thrust</dt><dd>${m.maxThrustN.toFixed(1)} N</dd><dt>Thrust / weight</dt><dd>${m.thrustToWeight.toFixed(2)}</dd><dt>Hover throttle</dt><dd>${(m.hoverThrottle * 100).toFixed(1)}%</dd><dt>Maximum power</dt><dd>${m.maxPowerW.toFixed(0)} W</dd><dt>Battery energy</dt><dd>${m.batteryEnergyWh.toFixed(1)} Wh</dd><dt>Hover current</dt><dd>${m.hoverCurrentA.toFixed(1)} A</dd><dt>Hover endurance</dt><dd>${m.hoverFlightTimeMin.toFixed(1)} min est.</dd><dt>Level-hover motors</dt><dd>${m.hoverMotorOutputs.map((v) => `${(v * 100).toFixed(0)}%`).join(" / ")}</dd></dl>`;
+      `<dl><dt>Total mass</dt><dd>${m.totalMassKg.toFixed(3)} kg</dd><dt>CG X/Y/Z</dt><dd>${m.centerOfMassM.map((v) => v.toFixed(3)).join(" / ")} m</dd><dt>Inertia X/Y/Z</dt><dd>${m.inertiaKgM2.map((v) => v.toFixed(4)).join(" / ")}</dd><dt>Maximum thrust</dt><dd>${m.maxThrustN.toFixed(1)} N</dd>${flightMetrics}<dt>Maximum power</dt><dd>${m.maxPowerW.toFixed(0)} W</dd><dt>Battery energy</dt><dd>${m.batteryEnergyWh.toFixed(1)} Wh</dd></dl>`;
     panel.querySelector("#designWarnings")!.innerHTML = m.warnings.length
       ? m.warnings
           .map(

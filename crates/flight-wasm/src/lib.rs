@@ -89,10 +89,10 @@ impl FlightSimulator {
         }
     }
     pub fn preset_json(name: &str) -> String {
-        let definition = if name == "freestyle" {
-            VehicleDefinition::freestyle()
-        } else {
-            VehicleDefinition::beginner()
+        let definition = match name {
+            "freestyle" => VehicleDefinition::freestyle(),
+            "trainer" => VehicleDefinition::fixed_wing_trainer(),
+            _ => VehicleDefinition::beginner(),
         };
         serde_json::to_string(&definition).expect("preset serializes")
     }
@@ -128,7 +128,8 @@ impl FlightSimulator {
             .attitude_body_to_ned
             .to_euler(glam::EulerRot::ZYX);
         let motors = self.inner.vehicle.motors.iter().enumerate().map(|(index,motor)| serde_json::json!({"positionBody":motor.position.to_array(),"forceNed":self.inner.forces.motor_thrust_ned.get(index).copied().unwrap_or_default().to_array()})).collect::<Vec<_>>();
-        serde_json::json!({"time":self.inner.state.sim_time_s,"position":self.inner.state.position_ned_m.to_array(),"velocity":self.inner.state.velocity_ned_mps.to_array(),"attitude":self.inner.state.attitude_body_to_ned.to_array(),"euler":[roll,pitch,yaw],"rates":self.inner.state.angular_rate_body_rps.to_array(),"forces":{"gravity":self.inner.forces.gravity.to_array(),"thrust":self.inner.forces.thrust.to_array(),"lift":self.inner.forces.lift.to_array(),"drag":self.inner.forces.drag.to_array(),"motors":motors},"control":{"target":t.target_rate_rps.to_array(),"actual":t.actual_rate_rps.to_array(),"error":t.error_rps.to_array(),"output":t.output.to_array(),"throttle":t.throttle,"motors":t.motors,"actualMotors":self.inner.vehicle.motors.iter().map(|motor|motor.actual_output).collect::<Vec<_>>()},"battery":{"remainingMah":self.inner.battery_state.remaining_mah,"consumedWh":self.inner.battery_state.consumed_wh,"voltage":self.inner.battery_state.voltage_v,"current":self.inner.battery_state.current_a},"mass":self.inner.vehicle.mass(),"cg":self.inner.vehicle.center_of_mass().to_array(),"inertia":self.inner.vehicle.inertia_kg_m2.to_array()}).to_string()
+        let surfaces = self.inner.forces.surface_forces.iter().map(|s|serde_json::json!({"name":s.name,"positionBody":s.position_body.to_array(),"liftNed":s.lift_ned.to_array(),"dragNed":s.drag_ned.to_array(),"angle":s.angle_rad,"cl":s.cl,"cd":s.cd,"stalled":s.stalled})).collect::<Vec<_>>();
+        serde_json::json!({"time":self.inner.state.sim_time_s,"vehicleClass":format!("{:?}",self.inner.vehicle.class),"position":self.inner.state.position_ned_m.to_array(),"velocity":self.inner.state.velocity_ned_mps.to_array(),"attitude":self.inner.state.attitude_body_to_ned.to_array(),"euler":[roll,pitch,yaw],"rates":self.inner.state.angular_rate_body_rps.to_array(),"airVelocity":self.inner.forces.air_velocity_ned.to_array(),"angleOfAttack":self.inner.forces.angle_of_attack_rad,"stalled":self.inner.forces.stalled,"forces":{"gravity":self.inner.forces.gravity.to_array(),"thrust":self.inner.forces.thrust.to_array(),"lift":self.inner.forces.lift.to_array(),"drag":self.inner.forces.drag.to_array(),"motors":motors,"surfaces":surfaces},"control":{"target":t.target_rate_rps.to_array(),"actual":t.actual_rate_rps.to_array(),"error":t.error_rps.to_array(),"output":t.output.to_array(),"throttle":self.inner.throttle(),"sticks":self.inner.control_sticks().to_array(),"motors":t.motors,"actualMotors":self.inner.vehicle.motors.iter().map(|motor|motor.actual_output).collect::<Vec<_>>()},"battery":{"remainingMah":self.inner.battery_state.remaining_mah,"consumedWh":self.inner.battery_state.consumed_wh,"voltage":self.inner.battery_state.voltage_v,"current":self.inner.battery_state.current_a},"mass":self.inner.vehicle.mass(),"cg":self.inner.vehicle.center_of_mass().to_array(),"inertia":self.inner.vehicle.inertia_kg_m2.to_array()}).to_string()
     }
 }
 impl Default for FlightSimulator {

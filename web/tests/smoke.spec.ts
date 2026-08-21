@@ -46,11 +46,14 @@ test("flight controls, modes, cameras, PID and pause are interactive", async ({
   await page.dispatchEvent("body", "keydown", { code: "KeyW" });
   await page.waitForTimeout(350);
   await page.dispatchEvent("body", "keyup", { code: "KeyW" });
-  expect(Number(await throttle.inputValue())).toBeGreaterThan(31);
+  const heldThrottle = Number(await throttle.inputValue());
+  expect(heldThrottle).toBeGreaterThan(31);
+  await page.waitForTimeout(250);
+  expect(Number(await throttle.inputValue())).toBe(heldThrottle);
 
   await page.dispatchEvent("body", "keydown", { code: "KeyD" });
   await page.waitForTimeout(350);
-  await expect(page.locator("#axisTelemetry > div").first()).not.toContainText(
+  await expect(page.locator("#axisTelemetry > div").nth(2)).not.toContainText(
     "T 0°/s",
   );
   await page.dispatchEvent("body", "keyup", { code: "KeyD" });
@@ -73,6 +76,44 @@ test("flight controls, modes, cameras, PID and pause are interactive", async ({
   await expect(page.locator("#simState")).toHaveText("PAUSED");
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(page.locator("#simState")).toHaveText("RUNNING");
+});
+
+test("Mode-2 mouse stick is bounded, centered, and explicitly captured", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "ENABLE MOUSE FLIGHT" }).click();
+  await expect(page.locator("#mouseStatus")).toContainText(
+    "MOUSE FLIGHT ACTIVE",
+  );
+  await page.waitForTimeout(100);
+  await page.locator("#mouseReturn").fill("0.3");
+  await page.evaluate(() =>
+    document.dispatchEvent(
+      new MouseEvent("mousemove", { movementX: 60, movementY: -50 }),
+    ),
+  );
+  await page.waitForTimeout(50);
+  const stick = (await page
+    .locator("#viewport")
+    .getAttribute("data-virtual-stick"))!
+    .split(",")
+    .map(Number);
+  expect(stick[0]).toBeGreaterThan(0);
+  expect(stick[1]).toBeLessThan(0);
+  const displaced = await page.locator("#virtualStick i").getAttribute("style");
+  expect(displaced).not.toContain("translate(0px, 0px)");
+  await page.locator("#mouseReturn").fill("4");
+  await page.waitForTimeout(400);
+  const centered = (await page
+    .locator("#viewport")
+    .getAttribute("data-virtual-stick"))!
+    .split(",")
+    .map(Number);
+  expect(Math.abs(centered[0])).toBeLessThan(0.03);
+  expect(Math.abs(centered[1])).toBeLessThan(0.03);
+  await page.evaluate(() => document.exitPointerLock());
+  await expect(page.locator("#mouseStatus")).toContainText("Click to capture");
 });
 
 test("rendered tilt, thrust arrow and lateral motion share one frame", async ({
@@ -129,4 +170,47 @@ test("workshop edit reaches preview, persistence, and authoritative flight defin
   expect(JSON.parse(runtime!).motors[0].positionM[0]).toBe(0.32);
   await page.getByRole("button", { name: "BUILD", exact: true }).click();
   await expect(positionX).toHaveValue("0.32");
+});
+
+test("Fixed Wing Trainer builds, accelerates, and takes off from the runway", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "BUILD", exact: true }).click();
+  await page.locator("#vehiclePreset").selectOption("trainer");
+  await expect(page.getByRole("button", { name: "Left Wing" })).toBeVisible();
+  await expect(page.locator("#metrics")).toContainText("Wing loading");
+  await page.getByRole("button", { name: "Left Wing" }).click();
+  await expect(
+    page.locator('[data-path="aeroSurfaces.0.stallAngleDeg"]'),
+  ).toHaveValue("15");
+  await page.getByRole("button", { name: "TEST FLIGHT" }).click();
+  await expect(page.locator("#modeReadout")).toHaveText("MANUAL");
+  await page.locator("#spawn").selectOption("ground");
+  await page.getByRole("button", { name: "Reset aircraft" }).click();
+  await page.locator("#throttle").evaluate((element: HTMLInputElement) => {
+    element.value = "100";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect
+    .poll(
+      async () => Number.parseFloat(await page.locator("#speed").innerText()),
+      { timeout: 10000 },
+    )
+    .toBeGreaterThan(6);
+  await page.dispatchEvent("body", "keydown", { code: "ArrowDown" });
+  await expect
+    .poll(
+      async () => Number.parseFloat(await page.locator("#alt").innerText()),
+      { timeout: 10000 },
+    )
+    .toBeGreaterThan(0.1);
+  await page.dispatchEvent("body", "keyup", { code: "ArrowDown" });
+  await expect(page.locator("#aoa")).toBeVisible();
+  expect(errors).toEqual([]);
 });

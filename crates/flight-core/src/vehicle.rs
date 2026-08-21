@@ -1,7 +1,10 @@
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
-use crate::{ComponentMass, GRAVITY, Motor, Vehicle};
+use crate::{
+    AeroSurface, ComponentMass, ControlAxis, GRAVITY, Motor, SEA_LEVEL_DENSITY, SurfacePlane, Vehicle,
+    VehicleClass,
+};
 
 pub const VEHICLE_SCHEMA_VERSION: u32 = 1;
 
@@ -74,6 +77,50 @@ pub struct PayloadDefinition {
     pub position_m: DVec3,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum VehicleClassDefinition {
+    #[default]
+    Multicopter,
+    FixedWing,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SurfacePlaneDefinition {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlAxisDefinition {
+    None,
+    Roll,
+    Pitch,
+    Yaw,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AeroSurfaceDefinition {
+    pub name: String,
+    pub position_m: DVec3,
+    pub plane: SurfacePlaneDefinition,
+    pub area_m2: f64,
+    pub span_m: f64,
+    pub chord_m: f64,
+    pub incidence_deg: f64,
+    pub lift_slope_per_rad: f64,
+    pub stall_angle_deg: f64,
+    pub cd0: f64,
+    pub induced_drag_k: f64,
+    pub control_axis: ControlAxisDefinition,
+    pub control_sign: f64,
+    pub max_deflection_deg: f64,
+    pub control_effectiveness: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
@@ -81,10 +128,14 @@ pub struct VehicleDefinition {
     pub schema_version: u32,
     pub name: String,
     pub preset: String,
+    #[serde(default)]
+    pub vehicle_class: VehicleClassDefinition,
     pub frame: FrameDefinition,
     pub motors: Vec<MotorDefinition>,
     pub battery: BatteryDefinition,
     pub payloads: Vec<PayloadDefinition>,
+    #[serde(default)]
+    pub aero_surfaces: Vec<AeroSurfaceDefinition>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -103,6 +154,12 @@ pub struct EngineeringMetrics {
     pub hover_flight_time_min: f64,
     pub hover_motor_outputs: [f64; 4],
     pub warnings: Vec<String>,
+    pub wing_area_m2: f64,
+    pub aspect_ratio: f64,
+    pub wing_loading_kg_m2: f64,
+    pub estimated_stall_speed_mps: f64,
+    pub power_to_weight_w_kg: f64,
+    pub cg_mac_fraction: f64,
 }
 
 impl VehicleDefinition {
@@ -111,6 +168,110 @@ impl VehicleDefinition {
     }
     pub fn freestyle() -> Self {
         Self::quad_preset(true)
+    }
+    pub fn fixed_wing_trainer() -> Self {
+        let propeller = PropellerDefinition {
+            diameter_m: 0.28,
+            pitch_m: 0.18,
+            blade_count: 2,
+            efficiency: 0.74,
+            mass_kg: 0.025,
+        };
+        let surface = |name: &str, position, plane, area, span, chord, axis, sign| AeroSurfaceDefinition {
+            name: name.into(),
+            position_m: position,
+            plane,
+            area_m2: area,
+            span_m: span,
+            chord_m: chord,
+            incidence_deg: if name.contains("Wing") { 2.0 } else { 0.0 },
+            lift_slope_per_rad: 4.8,
+            stall_angle_deg: 15.0,
+            cd0: 0.025,
+            induced_drag_k: 0.065,
+            control_axis: axis,
+            control_sign: sign,
+            max_deflection_deg: 22.0,
+            control_effectiveness: 0.55,
+        };
+        Self {
+            schema_version: VEHICLE_SCHEMA_VERSION,
+            name: "Fixed Wing Trainer".into(),
+            preset: "trainer".into(),
+            vehicle_class: VehicleClassDefinition::FixedWing,
+            frame: FrameDefinition {
+                arm_length_m: 0.3,
+                body_mass_kg: 0.72,
+                body_dimensions_m: DVec3::new(1.05, 0.16, 0.18),
+            },
+            motors: vec![MotorDefinition {
+                position_m: DVec3::new(0.52, 0.0, 0.0),
+                direction_body: DVec3::X,
+                base_max_thrust_n: 15.0,
+                max_power_w: 520.0,
+                mass_kg: 0.09,
+                spin: 1.0,
+                reaction_torque_nm: 0.025,
+                spin_up_time_s: 0.09,
+                spin_down_time_s: 0.14,
+                propeller,
+            }],
+            battery: BatteryDefinition {
+                cells: 4,
+                capacity_mah: 3300.0,
+                mass_kg: 0.34,
+                position_m: DVec3::new(0.04, 0.0, 0.02),
+                internal_resistance_ohm: 0.04,
+                max_discharge_c: 35.0,
+            },
+            payloads: vec![PayloadDefinition {
+                name: "FPV Camera".into(),
+                mass_kg: 0.06,
+                position_m: DVec3::new(0.34, 0.0, -0.05),
+            }],
+            aero_surfaces: vec![
+                surface(
+                    "Left Wing",
+                    DVec3::new(0.02, -0.55, 0.0),
+                    SurfacePlaneDefinition::Horizontal,
+                    0.24,
+                    0.85,
+                    0.28,
+                    ControlAxisDefinition::Roll,
+                    1.0,
+                ),
+                surface(
+                    "Right Wing",
+                    DVec3::new(0.02, 0.55, 0.0),
+                    SurfacePlaneDefinition::Horizontal,
+                    0.24,
+                    0.85,
+                    0.28,
+                    ControlAxisDefinition::Roll,
+                    -1.0,
+                ),
+                surface(
+                    "Elevator",
+                    DVec3::new(-0.43, 0.0, 0.0),
+                    SurfacePlaneDefinition::Horizontal,
+                    0.10,
+                    0.55,
+                    0.18,
+                    ControlAxisDefinition::Pitch,
+                    -1.0,
+                ),
+                surface(
+                    "Rudder",
+                    DVec3::new(-0.43, 0.0, -0.08),
+                    SurfacePlaneDefinition::Vertical,
+                    0.065,
+                    0.25,
+                    0.22,
+                    ControlAxisDefinition::Yaw,
+                    1.0,
+                ),
+            ],
+        }
     }
 
     fn quad_preset(freestyle: bool) -> Self {
@@ -142,6 +303,7 @@ impl VehicleDefinition {
             }
             .into(),
             preset: if freestyle { "freestyle" } else { "beginner" }.into(),
+            vehicle_class: VehicleClassDefinition::Multicopter,
             frame: FrameDefinition {
                 arm_length_m: arm,
                 body_mass_kg: if freestyle { 0.28 } else { 0.40 },
@@ -166,6 +328,7 @@ impl VehicleDefinition {
                 mass_kg: if freestyle { 0.04 } else { 0.08 },
                 position_m: DVec3::new(0.08, 0.0, -0.02),
             }],
+            aero_surfaces: vec![],
         }
     }
 
@@ -176,8 +339,12 @@ impl VehicleDefinition {
         if self.name.trim().is_empty() || self.name.len() > 80 {
             return Err("name must contain 1-80 characters".into());
         }
-        if self.motors.len() != 4 || self.payloads.len() > 32 {
-            return Err("quad requires four motors and at most 32 payloads".into());
+        let motor_count_valid = match self.vehicle_class {
+            VehicleClassDefinition::Multicopter => self.motors.len() == 4,
+            VehicleClassDefinition::FixedWing => self.motors.len() == 1,
+        };
+        if !motor_count_valid || self.payloads.len() > 32 || self.aero_surfaces.len() > 16 {
+            return Err("invalid component count for vehicle class".into());
         }
         let finite_range = |v: f64, low: f64, high: f64| v.is_finite() && (low..=high).contains(&v);
         if !finite_range(self.frame.arm_length_m, 0.03, 2.0)
@@ -225,6 +392,25 @@ impl VehicleDefinition {
                 || payload.position_m.abs().max_element() > 10.0
             {
                 return Err("invalid payload".into());
+            }
+        }
+        for surface in &self.aero_surfaces {
+            if surface.name.is_empty()
+                || surface.name.len() > 60
+                || !surface.position_m.is_finite()
+                || !finite_range(surface.area_m2, 0.005, 20.0)
+                || !finite_range(surface.span_m, 0.05, 20.0)
+                || !finite_range(surface.chord_m, 0.02, 5.0)
+                || !finite_range(surface.incidence_deg, -30.0, 30.0)
+                || !finite_range(surface.lift_slope_per_rad, 0.1, 12.0)
+                || !finite_range(surface.stall_angle_deg, 5.0, 45.0)
+                || !finite_range(surface.cd0, 0.001, 2.0)
+                || !finite_range(surface.induced_drag_k, 0.0, 2.0)
+                || !finite_range(surface.control_sign, -1.0, 1.0)
+                || !finite_range(surface.max_deflection_deg, 0.0, 60.0)
+                || !finite_range(surface.control_effectiveness, 0.0, 2.0)
+            {
+                return Err("invalid aerodynamic surface".into());
             }
         }
         Ok(())
@@ -289,7 +475,39 @@ impl VehicleDefinition {
             name: self.name.clone(),
             masses,
             motors,
-            wings: vec![],
+            class: match self.vehicle_class {
+                VehicleClassDefinition::Multicopter => VehicleClass::Multicopter,
+                VehicleClassDefinition::FixedWing => VehicleClass::FixedWing,
+            },
+            aero_surfaces: self
+                .aero_surfaces
+                .iter()
+                .map(|s| AeroSurface {
+                    name: s.name.clone(),
+                    position: s.position_m,
+                    plane: match s.plane {
+                        SurfacePlaneDefinition::Horizontal => SurfacePlane::Horizontal,
+                        SurfacePlaneDefinition::Vertical => SurfacePlane::Vertical,
+                    },
+                    area_m2: s.area_m2,
+                    span_m: s.span_m,
+                    chord_m: s.chord_m,
+                    incidence_rad: s.incidence_deg.to_radians(),
+                    lift_slope: s.lift_slope_per_rad,
+                    stall_angle_rad: s.stall_angle_deg.to_radians(),
+                    cd0: s.cd0,
+                    induced_drag_k: s.induced_drag_k,
+                    control_axis: match s.control_axis {
+                        ControlAxisDefinition::None => ControlAxis::None,
+                        ControlAxisDefinition::Roll => ControlAxis::Roll,
+                        ControlAxisDefinition::Pitch => ControlAxis::Pitch,
+                        ControlAxisDefinition::Yaw => ControlAxis::Yaw,
+                    },
+                    control_sign: s.control_sign,
+                    max_deflection_rad: s.max_deflection_deg.to_radians(),
+                    control_effectiveness: s.control_effectiveness,
+                })
+                .collect(),
             inertia_kg_m2: inertia,
             battery: self.battery.clone(),
         })
@@ -305,15 +523,21 @@ impl VehicleDefinition {
         let voltage = self.battery.nominal_voltage();
         let current = hover_power / voltage;
         let minutes = self.battery.energy_wh() / hover_power * 60.0 * 0.8;
-        let trim = hover_trim(&vehicle);
+        let trim = if self.vehicle_class == VehicleClassDefinition::Multicopter {
+            hover_trim(&vehicle)
+        } else {
+            [0.0; 4]
+        };
         let mut warnings = vec![];
-        if max_thrust <= mass * GRAVITY {
-            warnings.push("CRITICAL: total thrust cannot support weight".into())
-        } else if max_thrust / (mass * GRAVITY) < 1.2 {
-            warnings.push("WARNING: thrust-to-weight is below 1.2".into())
-        }
-        if hover > 0.8 {
-            warnings.push("WARNING: estimated hover throttle is very high".into())
+        if self.vehicle_class == VehicleClassDefinition::Multicopter {
+            if max_thrust <= mass * GRAVITY {
+                warnings.push("CRITICAL: total thrust cannot support weight".into())
+            } else if max_thrust / (mass * GRAVITY) < 1.2 {
+                warnings.push("WARNING: thrust-to-weight is below 1.2".into())
+            }
+            if hover > 0.8 {
+                warnings.push("WARNING: estimated hover throttle is very high".into())
+            }
         }
         if current > self.battery.max_current_a() {
             warnings.push("WARNING: estimated battery discharge limit exceeded".into())
@@ -323,6 +547,33 @@ impl VehicleDefinition {
         }
         if vehicle.center_of_mass().truncate().length() > self.frame.arm_length_m * 0.35 {
             warnings.push("WARNING: centre of mass is strongly offset".into())
+        }
+        let wing_area = self
+            .aero_surfaces
+            .iter()
+            .filter(|s| {
+                matches!(s.plane, SurfacePlaneDefinition::Horizontal)
+                    && matches!(s.control_axis, ControlAxisDefinition::Roll)
+            })
+            .map(|s| s.area_m2)
+            .sum::<f64>();
+        let wing_span = self
+            .aero_surfaces
+            .iter()
+            .filter(|s| matches!(s.control_axis, ControlAxisDefinition::Roll))
+            .map(|s| s.span_m)
+            .sum::<f64>();
+        let aspect_ratio = wing_span * wing_span / wing_area.max(1e-9);
+        let stall_speed = (2.0 * mass * GRAVITY / (SEA_LEVEL_DENSITY * wing_area.max(1e-9) * 1.15)).sqrt();
+        let cg_mac_fraction = if self.vehicle_class == VehicleClassDefinition::FixedWing {
+            (0.16 - vehicle.center_of_mass().x) / 0.28
+        } else {
+            0.0
+        };
+        if self.vehicle_class == VehicleClassDefinition::FixedWing
+            && !(0.20..=0.38).contains(&cg_mac_fraction)
+        {
+            warnings.push("WARNING: CG outside educational 20-38% MAC guidance".into());
         }
         Ok(EngineeringMetrics {
             total_mass_kg: mass,
@@ -337,6 +588,12 @@ impl VehicleDefinition {
             hover_flight_time_min: minutes,
             hover_motor_outputs: trim,
             warnings,
+            wing_area_m2: wing_area,
+            aspect_ratio,
+            wing_loading_kg_m2: mass / wing_area.max(1e-9),
+            estimated_stall_speed_mps: stall_speed,
+            power_to_weight_w_kg: max_power / mass,
+            cg_mac_fraction,
         })
     }
 }
@@ -457,5 +714,40 @@ mod tests {
         d = VehicleDefinition::beginner();
         d.payloads = vec![d.payloads[0].clone(); 33];
         assert!(d.validate().is_err());
+    }
+    #[test]
+    fn trainer_metrics_respond_to_wing_area_and_mass() {
+        let mut larger = VehicleDefinition::fixed_wing_trainer();
+        let base = larger.metrics().unwrap();
+        for surface in &mut larger.aero_surfaces {
+            if matches!(surface.control_axis, ControlAxisDefinition::Roll) {
+                surface.area_m2 *= 1.5;
+            }
+        }
+        let large = larger.metrics().unwrap();
+        assert!(large.wing_loading_kg_m2 < base.wing_loading_kg_m2);
+        assert!(large.estimated_stall_speed_mps < base.estimated_stall_speed_mps);
+        larger.frame.body_mass_kg *= 1.5;
+        assert!(larger.metrics().unwrap().estimated_stall_speed_mps > large.estimated_stall_speed_mps);
+    }
+    #[test]
+    fn aft_cg_changes_properties_and_warns() {
+        let mut trainer = VehicleDefinition::fixed_wing_trainer();
+        let base = trainer.metrics().unwrap();
+        trainer.battery.position_m.x = -0.5;
+        let aft = trainer.metrics().unwrap();
+        assert!(aft.center_of_mass_m.x < base.center_of_mass_m.x);
+        assert!(aft.inertia_kg_m2.y > base.inertia_kg_m2.y);
+        assert!(aft.warnings.iter().any(|w| w.contains("CG outside")));
+    }
+    #[test]
+    fn configured_stall_angle_changes_physical_stall_point() {
+        let mut definition = VehicleDefinition::fixed_wing_trainer();
+        let air = DVec3::new(15.0, 0.0, 5.0);
+        let low = definition.to_vehicle().unwrap().aero_surfaces[0].clone();
+        definition.aero_surfaces[0].stall_angle_deg = 30.0;
+        let high = definition.to_vehicle().unwrap().aero_surfaces[0].clone();
+        assert!(crate::aerodynamic_force(&low, air, SEA_LEVEL_DENSITY, 0.0).5);
+        assert!(!crate::aerodynamic_force(&high, air, SEA_LEVEL_DENSITY, 0.0).5);
     }
 }

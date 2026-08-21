@@ -13,10 +13,12 @@ import {
 import {
   PROFILES,
   gamepadCommands,
+  applyMouseDelta,
   loadCalibration,
   saveCalibration,
   shape,
   slew,
+  springVirtualStick,
   type AxisName,
   type ControlProfile,
 } from "./input";
@@ -32,7 +34,7 @@ document
   .querySelector("aside section dl")!
   .insertAdjacentHTML(
     "beforeend",
-    '<dt>Battery</dt><dd id="battery">—</dd><dt>Remaining</dt><dd id="batteryRemaining">—</dd>',
+    '<dt>Battery</dt><dd id="battery">—</dd><dt>Remaining</dt><dd id="batteryRemaining">—</dd><dt>Input source</dt><dd id="inputReadout">Keyboard + Mouse</dd><dt id="aoaLabel" hidden>Angle of attack</dt><dd id="aoa" hidden>—</dd>',
   );
 buildNav.disabled = false;
 const flyView = document.querySelector<HTMLElement>("main")!;
@@ -47,6 +49,16 @@ let activeBatteryCapacityMah = (
 ).battery.capacityMah;
 const view = document.querySelector<HTMLElement>("#viewport")!,
   scene = new THREE.Scene();
+document.querySelector(".help")!.textContent =
+  "W/S throttle · A/D yaw · Mouse pitch/roll · Arrows fallback · R reset";
+view.insertAdjacentHTML(
+  "beforeend",
+  `<div id="mouseControls" class="mouse-controls"><button id="mouseFlight">ENABLE MOUSE FLIGHT</button><span id="mouseStatus">Click to capture · Esc releases</span><label>Source <select id="inputSource"><option value="mouse">KEYBOARD + MOUSE</option><option value="gamepad">GAMEPAD</option></select></label><label>Sensitivity <input id="mouseSensitivity" type="range" min="0.0005" max="0.008" step="0.0005" value="0.0025"></label><label>Return <input id="mouseReturn" type="range" min="0.3" max="4" step="0.1" value="1.4"></label><div id="virtualStick"><i></i><b>↑ PITCH FORWARD</b></div></div>`,
+);
+view.insertAdjacentHTML(
+  "beforeend",
+  '<div id="stallWarning" class="stall-warning" hidden>STALL · AoA HIGH</div>',
+);
 scene.background = new THREE.Color(0x8fb9cf);
 scene.fog = new THREE.Fog(0x8fb9cf, 35, 120);
 const camera = new THREE.PerspectiveCamera(62, 1, 0.05, 500),
@@ -99,6 +111,7 @@ const craft = new THREE.Group(),
 body.castShadow = true;
 craft.add(body);
 const flightMotorVisuals: THREE.Object3D[] = [];
+const quadVisuals: THREE.Object3D[] = [body];
 for (const [x, z] of [
   [0.18, 0.18],
   [0.18, -0.18],
@@ -112,6 +125,7 @@ for (const [x, z] of [
   arm.rotation.x = Math.PI / 2;
   arm.rotation.z = Math.atan2(x, z);
   craft.add(arm);
+  quadVisuals.push(arm);
   const rotor = new THREE.Mesh(
     new THREE.CylinderGeometry(0.115, 0.115, 0.012, 24),
     new THREE.MeshStandardMaterial({
@@ -123,7 +137,67 @@ for (const [x, z] of [
   rotor.position.set(x, 0.045, z);
   craft.add(rotor);
   flightMotorVisuals.push(rotor);
+  quadVisuals.push(rotor);
 }
+const fixedWingVisual = new THREE.Group();
+const trainerMaterial = new THREE.MeshStandardMaterial({
+  color: 0xe9edf0,
+  roughness: 0.55,
+});
+const trainerAccent = new THREE.MeshStandardMaterial({
+  color: 0xf2aa3b,
+  roughness: 0.5,
+});
+const fuselage = new THREE.Mesh(
+  new THREE.BoxGeometry(0.16, 0.18, 1.05),
+  trainerMaterial,
+);
+const mainWing = new THREE.Mesh(
+  new THREE.BoxGeometry(1.7, 0.025, 0.28),
+  trainerMaterial,
+);
+mainWing.position.z = -0.02;
+const horizontalTail = new THREE.Mesh(
+  new THREE.BoxGeometry(0.55, 0.018, 0.18),
+  trainerAccent,
+);
+horizontalTail.position.z = 0.43;
+const verticalTail = new THREE.Mesh(
+  new THREE.BoxGeometry(0.025, 0.25, 0.22),
+  trainerAccent,
+);
+verticalTail.position.set(0, 0.1, 0.43);
+const trainerPropeller = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.14, 0.14, 0.012, 28),
+  new THREE.MeshStandardMaterial({
+    color: 0x263b47,
+    transparent: true,
+    opacity: 0.55,
+  }),
+);
+trainerPropeller.rotation.x = Math.PI / 2;
+trainerPropeller.position.z = -0.53;
+const leftAileron = new THREE.Mesh(
+  new THREE.BoxGeometry(0.62, 0.014, 0.07),
+  trainerAccent,
+);
+leftAileron.position.set(-0.5, -0.005, 0.11);
+const rightAileron = new THREE.Mesh(
+  new THREE.BoxGeometry(0.62, 0.014, 0.07),
+  trainerAccent,
+);
+rightAileron.position.set(0.5, -0.005, 0.11);
+fixedWingVisual.add(
+  fuselage,
+  mainWing,
+  horizontalTail,
+  verticalTail,
+  trainerPropeller,
+  leftAileron,
+  rightAileron,
+);
+fixedWingVisual.visible = false;
+craft.add(fixedWingVisual);
 scene.add(craft);
 const thrustArrow = new THREE.ArrowHelper(
     new THREE.Vector3(0, 1, 0),
@@ -165,6 +239,16 @@ const motorArrows = Array.from(
       0xffd166,
     ),
 );
+const surfaceArrows = Array.from(
+  { length: 16 },
+  () =>
+    new THREE.ArrowHelper(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(),
+      0.1,
+      0x79f2a6,
+    ),
+);
 scene.add(
   thrustArrow,
   velocityArrow,
@@ -172,6 +256,7 @@ scene.add(
   liftArrow,
   dragArrow,
   ...motorArrows,
+  ...surfaceArrows,
 );
 let profile: ControlProfile = {
     ...PROFILES.BEGINNER,
@@ -185,11 +270,45 @@ let profile: ControlProfile = {
   last = performance.now(),
   gamepadWasActive = false,
   rangeCapture = false;
+let inputSource: "mouse" | "gamepad" = "mouse";
+let virtualStick = { roll: 0, pitch: 0 };
 const commands = { roll: 0, pitch: 0, yaw: 0 },
   keys = new Set<string>();
 const calibration = loadCalibration(localStorage);
 const throttle = document.querySelector<HTMLInputElement>("#throttle")!,
   throttleOut = document.querySelector<HTMLOutputElement>("#throttleOut")!;
+const inputSourceSelect =
+    document.querySelector<HTMLSelectElement>("#inputSource")!,
+  mouseSensitivity =
+    document.querySelector<HTMLInputElement>("#mouseSensitivity")!,
+  mouseReturn = document.querySelector<HTMLInputElement>("#mouseReturn")!,
+  stickDot = document.querySelector<HTMLElement>("#virtualStick i")!;
+inputSourceSelect.onchange = () => {
+  inputSource = inputSourceSelect.value as typeof inputSource;
+  virtualStick = { roll: 0, pitch: 0 };
+};
+document
+  .querySelector("#mouseFlight")!
+  .addEventListener("click", () => view.requestPointerLock());
+document.addEventListener("pointerlockchange", () => {
+  const active = document.pointerLockElement === view;
+  virtualStick = { roll: 0, pitch: 0 };
+  document.querySelector("#mouseStatus")!.textContent = active
+    ? "MOUSE FLIGHT ACTIVE · ESC to release"
+    : "Click to capture · Esc releases";
+  document.querySelector("#mouseFlight")!.textContent = active
+    ? "MOUSE ACTIVE"
+    : "ENABLE MOUSE FLIGHT";
+});
+document.addEventListener("mousemove", (event) => {
+  if (document.pointerLockElement === view && inputSource === "mouse")
+    virtualStick = applyMouseDelta(
+      virtualStick,
+      event.movementX,
+      event.movementY,
+      Number(mouseSensitivity.value),
+    );
+});
 addEventListener("keydown", (e) => {
   if (["ArrowUp", "ArrowDown", "Space"].includes(e.code)) e.preventDefault();
   keys.add(e.code);
@@ -311,7 +430,10 @@ function reset() {
   sim.set_mode(mode === "ANGLE");
   applyProfile(profile.name === "SPORT" ? "SPORT" : "BEGINNER");
   commands.roll = commands.pitch = commands.yaw = 0;
-  collective = 0.31;
+  collective =
+    (JSON.parse(sim.state_json()) as SimState).vehicleClass === "FixedWing"
+      ? 0
+      : 0.31;
   accumulator = 0;
   history.length = 0;
 }
@@ -321,6 +443,9 @@ const workshop = setupWorkshop(root, sim, (definition) => {
   flyNav.classList.add("active");
   buildNav.classList.remove("active");
   activeBatteryCapacityMah = definition.battery.capacityMah;
+  const fixedWing = definition.vehicleClass === "fixedWing";
+  fixedWingVisual.visible = fixedWing;
+  quadVisuals.forEach((object) => (object.visible = !fixedWing));
   body.scale.set(
     definition.frame.bodyDimensionsM[1] / 0.38,
     definition.frame.bodyDimensionsM[2] / 0.13,
@@ -332,9 +457,22 @@ const workshop = setupWorkshop(root, sim, (definition) => {
   document.querySelector("aside dl dd")!.textContent = definition.name;
   const engineering = JSON.parse(sim.engineering_metrics_json()) as {
     hoverThrottle: number;
+    estimatedStallSpeedMps: number;
   };
   reset();
-  collective = Math.min(1, engineering.hoverThrottle);
+  collective = fixedWing ? 0 : Math.min(1, engineering.hoverThrottle);
+  document.querySelector("#modeReadout")!.textContent = fixedWing
+    ? "MANUAL"
+    : mode;
+  document
+    .querySelectorAll<HTMLButtonElement>("[data-mode]")
+    .forEach((button) => (button.disabled = fixedWing));
+  document.querySelector<HTMLInputElement>("#chaseDistance")!.value = fixedWing
+    ? "3.4"
+    : "2.4";
+  document.querySelector(".range-label small")!.textContent = fixedWing
+    ? "Forward propulsion · W/S persists"
+    : "Estimated hover 31%";
   throttle.value = String(Math.round(collective * 100));
   throttleOut.value = `${Math.round(collective * 100)}%`;
   view.dataset.vehicleDefinition = sim.vehicle_definition_json();
@@ -485,14 +623,27 @@ function drawGraph() {
 }
 function updateInput(dt: number) {
   const pad = navigator.getGamepads().find(Boolean);
+  virtualStick = springVirtualStick(
+    virtualStick,
+    Number(mouseReturn.value),
+    dt,
+  );
+  view.dataset.virtualStick = `${virtualStick.roll},${virtualStick.pitch}`;
+  stickDot.style.transform = `translate(${virtualStick.roll * 35}px, ${virtualStick.pitch * 35}px)`;
   let targets = {
-    roll: keys.has("KeyD") ? 1 : keys.has("KeyA") ? -1 : 0,
-    pitch: keys.has("ArrowUp") ? 1 : keys.has("ArrowDown") ? -1 : 0,
-    yaw: keys.has("KeyE") ? 1 : keys.has("KeyQ") ? -1 : 0,
+    roll: keys.has("ArrowRight")
+      ? 1
+      : keys.has("ArrowLeft")
+        ? -1
+        : virtualStick.roll,
+    pitch: keys.has("ArrowUp")
+      ? -1
+      : keys.has("ArrowDown")
+        ? 1
+        : virtualStick.pitch,
+    yaw: keys.has("KeyD") ? 1 : keys.has("KeyA") ? -1 : 0,
   };
-  let gamepadActive = false;
-  if (pad) {
-    gamepadActive = true;
+  if (pad && inputSource === "gamepad") {
     gamepadWasActive = true;
     const p = gamepadCommands(pad, calibration);
     targets = { roll: p.roll, pitch: p.pitch, yaw: p.yaw };
@@ -518,7 +669,7 @@ function updateInput(dt: number) {
     document.querySelector("#gamepadState")!.textContent = gamepadWasActive
       ? "Controller disconnected · fail-safe active"
       : "No controller connected";
-    if (gamepadWasActive) {
+    if (gamepadWasActive && inputSource === "gamepad") {
       targets = { roll: 0, pitch: 0, yaw: 0 };
       collective = Math.max(0, collective - dt * 0.08);
     } else {
@@ -536,14 +687,7 @@ function updateInput(dt: number) {
       profile.release,
       dt,
     );
-  const shaped = gamepadActive
-    ? commands
-    : {
-        roll: shape(commands.roll, 0, profile.expo),
-        pitch: shape(commands.pitch, 0, profile.expo),
-        yaw: shape(commands.yaw, 0, profile.expo),
-      };
-  sim.set_control(shaped.roll, shaped.pitch, shaped.yaw, collective);
+  sim.set_control(commands.roll, commands.pitch, commands.yaw, collective);
 }
 function resize() {
   const w = view.clientWidth,
@@ -579,8 +723,7 @@ function updateCamera() {
   }
 }
 function updateHud() {
-  const m = metrics(state.mass),
-    speed = Math.hypot(...state.velocity),
+  const speed = Math.hypot(...state.velocity),
     angles = state.euler.map((v) => v * DEG);
   throttle.value = String(Math.round(collective * 100));
   throttleOut.value = `${throttle.value}%`;
@@ -588,12 +731,25 @@ function updateHud() {
     `${(-state.position[2]).toFixed(1)} m`;
   document.querySelector("#speed")!.textContent = `${speed.toFixed(1)} m/s`;
   document.querySelector("#airspeed")!.textContent = `${speed.toFixed(1)} m/s`;
+  const airspeed = Math.hypot(...state.airVelocity);
+  document.querySelector("#airspeed")!.textContent =
+    `${airspeed.toFixed(1)} m/s`;
   document.querySelector("#vertical")!.textContent =
     `${(-state.velocity[2]).toFixed(1)} m/s`;
   document.querySelector("#battery")!.textContent =
     `${state.battery.voltage.toFixed(1)} V · ${state.battery.current.toFixed(1)} A`;
   document.querySelector("#batteryRemaining")!.textContent =
     `${Math.max(0, (state.battery.remainingMah / activeBatteryCapacityMah) * 100).toFixed(0)}%`;
+  document.querySelector("#inputReadout")!.textContent =
+    inputSource === "gamepad" ? "Gamepad" : "Keyboard + Mouse";
+  const fixedWing = state.vehicleClass === "FixedWing";
+  (document.querySelector("#aoaLabel") as HTMLElement).hidden = !fixedWing;
+  (document.querySelector("#aoa") as HTMLElement).hidden = !fixedWing;
+  document.querySelector("#aoa")!.textContent =
+    `${(state.angleOfAttack * DEG).toFixed(1)}°`;
+  (document.querySelector("#stallWarning") as HTMLElement).hidden = !(
+    fixedWing && state.stalled
+  );
   document.querySelector("#angles")!.textContent = angles
     .map((v) => `${v.toFixed(0)}°`)
     .join(" / ");
@@ -620,7 +776,9 @@ function updateHud() {
   if (history.length > 240) history.shift();
   drawGraph();
   document.querySelector("#status")!.textContent =
-    `Simulation running locally · ${state.time.toFixed(1)} s · hover ${(m.hoverThrottle * 100).toFixed(0)}%`;
+    state.vehicleClass === "FixedWing"
+      ? `Simulation running locally · ${state.time.toFixed(1)} s · AoA ${(state.angleOfAttack * DEG).toFixed(1)}°${state.stalled ? " · STALL" : ""}`
+      : `Simulation running locally · ${state.time.toFixed(1)} s · hover ${(metrics(state.mass).hoverThrottle * 100).toFixed(0)}%`;
 }
 function frame(now: number) {
   const elapsed = Math.min((now - last) / 1000, 0.05);
@@ -652,7 +810,11 @@ function frame(now: number) {
   setArrow(dragArrow, state.forces.drag, 1 / 3);
   setArrow(velocityArrow, state.velocity, 0.25);
   const thrustDirection = nedVectorToThree(state.forces.thrust).normalize();
-  const modelThrustDirection = new THREE.Vector3(0, 1, 0)
+  const modelThrustDirection = new THREE.Vector3(
+    0,
+    state.vehicleClass === "FixedWing" ? 0 : 1,
+    state.vehicleClass === "FixedWing" ? -1 : 0,
+  )
     .applyQuaternion(craft.quaternion)
     .normalize();
   view.dataset.thrustDirection = thrustDirection.toArray().join(",");
@@ -671,6 +833,25 @@ function frame(now: number) {
     if (force.lengthSq() > 1e-12) arrow.setDirection(force.normalize());
     arrow.setLength(Math.max(0.01, Math.hypot(...motor.forceNed) / 8));
   });
+  state.forces.surfaces.forEach((surface, index) => {
+    const arrow = surfaceArrows[index];
+    if (!arrow) return;
+    const origin = bodyVectorToModel(surface.positionBody)
+      .applyQuaternion(craft.quaternion)
+      .add(craft.position);
+    const force = nedVectorToThree(surface.liftNed).add(
+      nedVectorToThree(surface.dragNed),
+    );
+    arrow.position.copy(origin);
+    if (force.lengthSq() > 1e-12) arrow.setDirection(force.normalize());
+    arrow.setLength(Math.max(0.01, force.length() / 8));
+  });
+  if (state.vehicleClass === "FixedWing") {
+    leftAileron.rotation.x = state.control.sticks[0] * 0.28;
+    rightAileron.rotation.x = -state.control.sticks[0] * 0.28;
+    horizontalTail.rotation.x = state.control.sticks[1] * 0.28;
+    verticalTail.rotation.y = -state.control.sticks[2] * 0.28;
+  }
   const vectors = document.querySelector<HTMLInputElement>("#vectors")!.checked;
   thrustArrow.visible = vectors;
   velocityArrow.visible = vectors;
@@ -679,6 +860,10 @@ function frame(now: number) {
   dragArrow.visible = vectors && Math.hypot(...state.forces.drag) > 0.01;
   const showMotors =
     document.querySelector<HTMLInputElement>("#motorVectors")!.checked;
+  surfaceArrows.forEach(
+    (arrow, index) =>
+      (arrow.visible = showMotors && index < state.forces.surfaces.length),
+  );
   motorArrows.forEach((arrow) => (arrow.visible = showMotors));
   updateCamera();
   updateHud();

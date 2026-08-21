@@ -17,7 +17,7 @@ All core values use SI units.
 - Gravity, quadratic body drag, per-motor thrust, moment arm torque `τ = (r - CG) × F`, and rotor reaction torque.
 - Component-derived mass, center of mass and diagonal inertia. The central body uses a box approximation; motor, propeller, battery and payload point masses use the parallel-axis theorem about the computed CG.
 - Air-relative velocity (`vehicle velocity - wind`), density-scaled propulsion, and simplified finite wing forces.
-- Wing angle of attack `atan2(-Vz, Vx) + incidence`, dynamic pressure `q = ½ρV²`, linear lift slope with a smooth post-stall attenuation, parasite plus induced drag.
+- Multiple wing/tail forces, airflow-dependent control surfaces and continuous stall attenuation as described below.
 - A simple inelastic ground plane collision response.
 - Acro body-rate control and an Angle attitude outer loop feeding three independent body-rate PIDs.
 - An X-quad mixer whose signs follow +X forward, +Y right and +Z down.
@@ -40,10 +40,26 @@ Power is estimated as `Pmax × output^1.5`. Battery state integrates current con
 
 Static hover allocation solves four linear equations for vertical force and three body moments. It exposes the command imbalance caused by an offset CG and warns when the solution saturates.
 
+## Fixed-wing aerodynamics
+
+The Fixed Wing Trainer is an educational 1.7 m-span, 0.48 m²-wing aircraft of approximately 1.3 kg. Its 4-cell/3300 mAh battery drives one 15 N, 520 W forward propulsor. The conventional tail has a 0.10 m² elevator and 0.065 m² rudder. It is not based on a commercial airframe.
+
+Authoritative air velocity is `v_air,NED = v_vehicle,NED - v_wind,NED`. The body-to-NED quaternion inverse transforms it into body coordinates. Each surface also samples a bounded rotational contribution `0.1(ω × r)`; this and a speed-scaled angular damping approximation represent basic aerodynamic rate damping without a full distributed panel model.
+
+For horizontal surfaces, angle of attack is `α = atan2(Vz, Vx) + incidence + control_effect`. Because body +Z is down, a nose above its flight path produces positive body `Vz` and positive α. Vertical surfaces use sideslip `β = atan2(Vy, Vx)`. AoA is derived from airflow, never vehicle pitch alone.
+
+Dynamic pressure is `q = ½ρV²`. Before stall, `CL = CLα α`. At the configured critical magnitude `αs`, CL is continuous; beyond it, `CL = CLα αs sign(α)(αs/|α|)^1.2`, so lift physically falls instead of increasing indefinitely. Lift magnitude is `q S CL` and its direction is perpendicular to the local planar airflow. Near-zero airflow produces near-zero force.
+
+Drag is opposite local relative velocity with `CD = CD0 + k CL² + 1.2 e²`, where `e = max(0,(|α|-αs)/αs)`. The final term supplies continuous post-stall pressure drag. Generic fuselage drag is reduced for fixed wings to avoid double-counting surface profile drag.
+
+Every left/right wing, elevator and rudder has its own body position. Rust applies `τ = (r-CG) × (L+D)`. Ailerons use opposite incidence changes; elevator and rudder change their tail surface incidence. Consequently authority scales with dynamic pressure and is negligible while stationary. Control commands never directly inject attitude, velocity or arbitrary torque.
+
+The simplified runway contact clamps penetration, damps forward/lateral motion lightly, and constrains roll/yaw while rolling. Once aerodynamic force creates upward velocity, the aircraft leaves the plane naturally. Low-impact contact settles; detailed wheels, suspension, tire steering and terrain collision shapes are not modelled.
+
 ## Approximated
 
-Motor/propeller performance is a bounded static estimate scaled by density and battery voltage. Controller tuning is specific to this educational model. Body drag uses a lumped coefficient. Wings use one force point and no spanwise flow. Inertia omits component intrinsic tensors except the central body. Stall is deliberately smooth and educational, not an airfoil lookup or CFD solution.
+Motor/propeller performance is a bounded static estimate scaled by density and battery voltage. Controller tuning is specific to this educational model. Body drag uses a lumped coefficient. Each surface uses one force point with no spanwise flow, downwash, propwash, ground effect or wake interaction. Inertia omits component intrinsic tensors except the central body. Stall is deliberately smooth and educational, not an airfoil lookup, blade-element analysis, CFD, or a flight-test-derived model.
 
 ## Not yet modelled
 
-Blade-element propellers, thermal/electrochemical battery behaviour, ground effect, gyroscopic rotor effects, detailed fuselage aerodynamics, control surfaces, compressibility, wake interaction, collision shapes/raycasting, damage/fracture, and atmospheric lapse layers. Results are qualitative engineering estimates, not design certification.
+Blade-element propellers, thermal/electrochemical battery behaviour, ground effect, gyroscopic rotor effects, detailed fuselage aerodynamics, compressibility, wake interaction, control-surface hinge dynamics, collision shapes/raycasting, damage/fracture, and atmospheric lapse layers. Results are qualitative engineering estimates, not design certification.

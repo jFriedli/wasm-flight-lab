@@ -32,14 +32,34 @@ export interface PayloadDefinition {
   massKg: number;
   positionM: Vec3;
 }
+export type VehicleClassDefinition = "multicopter" | "fixedWing";
+export interface AeroSurfaceDefinition {
+  name: string;
+  positionM: Vec3;
+  plane: "horizontal" | "vertical";
+  areaM2: number;
+  spanM: number;
+  chordM: number;
+  incidenceDeg: number;
+  liftSlopePerRad: number;
+  stallAngleDeg: number;
+  cd0: number;
+  inducedDragK: number;
+  controlAxis: "none" | "roll" | "pitch" | "yaw";
+  controlSign: number;
+  maxDeflectionDeg: number;
+  controlEffectiveness: number;
+}
 export interface VehicleDefinition {
   schemaVersion: 1;
   name: string;
   preset: string;
+  vehicleClass?: VehicleClassDefinition;
   frame: { armLengthM: number; bodyMassKg: number; bodyDimensionsM: Vec3 };
   motors: MotorDefinition[];
   battery: BatteryDefinition;
   payloads: PayloadDefinition[];
+  aeroSurfaces?: AeroSurfaceDefinition[];
 }
 export interface EngineeringMetrics {
   totalMassKg: number;
@@ -54,6 +74,12 @@ export interface EngineeringMetrics {
   hoverFlightTimeMin: number;
   hoverMotorOutputs: [number, number, number, number];
   warnings: string[];
+  wingAreaM2: number;
+  aspectRatio: number;
+  wingLoadingKgM2: number;
+  estimatedStallSpeedMps: number;
+  powerToWeightWKg: number;
+  cgMacFraction: number;
 }
 export const STORAGE_KEY = "flightlab.vehicles.v1",
   MAX_FILE_BYTES = 256_000;
@@ -77,6 +103,38 @@ export function validateVehicle(value: unknown): value is VehicleDefinition {
     v.name.length > 80 ||
     !v.frame ||
     !v.battery
+  )
+    return false;
+  if (
+    v.vehicleClass !== undefined &&
+    !["multicopter", "fixedWing"].includes(v.vehicleClass)
+  )
+    return false;
+  if (
+    v.aeroSurfaces !== undefined &&
+    (!Array.isArray(v.aeroSurfaces) ||
+      v.aeroSurfaces.length > 16 ||
+      !v.aeroSurfaces.every(
+        (s) =>
+          s &&
+          typeof s.name === "string" &&
+          s.name.length > 0 &&
+          s.name.length <= 60 &&
+          vec(s.positionM) &&
+          ["horizontal", "vertical"].includes(s.plane) &&
+          finite(s.areaM2, 0.005, 20) &&
+          finite(s.spanM, 0.05, 20) &&
+          finite(s.chordM, 0.02, 5) &&
+          finite(s.incidenceDeg, -30, 30) &&
+          finite(s.liftSlopePerRad, 0.1, 12) &&
+          finite(s.stallAngleDeg, 5, 45) &&
+          finite(s.cd0, 0.001, 2) &&
+          finite(s.inducedDragK, 0, 2) &&
+          ["none", "roll", "pitch", "yaw"].includes(s.controlAxis) &&
+          finite(s.controlSign, -1, 1) &&
+          finite(s.maxDeflectionDeg, 0, 60) &&
+          finite(s.controlEffectiveness, 0, 2),
+      ))
   )
     return false;
   if (
