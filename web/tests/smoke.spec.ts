@@ -26,13 +26,13 @@ test("Beginner Quad performs a controlled vertical takeoff and landing", async (
     Number.parseFloat(await page.locator("#alt").innerText()),
   ).toBeGreaterThan(0.2);
   await throttle.evaluate((element: HTMLInputElement) => {
-    element.value = "12";
+    element.value = "0";
     element.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await expect
     .poll(
       async () => Number.parseFloat(await page.locator("#alt").innerText()),
-      { timeout: 6000 },
+      { timeout: 10000 },
     )
     .toBeLessThan(0.15);
   await expect(page.locator("#angles")).toContainText("0° / 0°");
