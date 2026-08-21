@@ -3,6 +3,13 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import init, { FlightSimulator } from "./wasm/flight_wasm";
 import { metrics, type SimState } from "./model";
+import { setupWorkshop } from "./workshop";
+import {
+  attitudeBodyToNedToThree,
+  bodyVectorToModel,
+  nedPositionToThree,
+  nedVectorToThree,
+} from "./frames";
 import {
   PROFILES,
   gamepadCommands,
@@ -17,10 +24,27 @@ const DEG = 180 / Math.PI,
   DT = 0.004,
   AXES: AxisName[] = ["roll", "pitch", "yaw", "throttle"];
 const root = document.querySelector<HTMLDivElement>("#app")!;
-root.innerHTML = `<header><div><strong>WASM FLIGHT LAB</strong><small>Design it. Fly it. Break it. Understand it.</small></div><nav><button class="active">FLY</button><button disabled>BUILD</button><button disabled>MISSION</button><button disabled>ANALYZE</button></nav></header><main><section id="viewport"><div class="badge">LIVE · WASM 250 Hz</div><div class="toolbar"><span>MODE</span><button data-mode="ACRO" class="active">ACRO</button><button data-mode="ANGLE">ANGLE</button><span>CAMERA</span><button data-camera="CHASE" class="active">CHASE</button><button data-camera="FPV">FPV</button><button data-camera="FREE">FREE</button></div><div class="help">W/S throttle · A/D roll · ↑/↓ pitch · Q/E yaw · Space pause · R reset</div><div class="attitude"><i id="horizon"></i><span id="attitudeText">LEVEL</span></div></section><aside><section><h2>FLIGHT DATA</h2><dl><dt>Aircraft</dt><dd>Beginner Quad</dd><dt>Flight mode</dt><dd id="modeReadout">ACRO</dd><dt>Altitude</dt><dd id="alt">—</dd><dt>Ground speed</dt><dd id="speed">—</dd><dt>Airspeed</dt><dd id="airspeed">—</dd><dt>Vertical speed</dt><dd id="vertical">—</dd><dt>Attitude R / P / Y</dt><dd id="angles">—</dd><dt>Simulation</dt><dd id="simState">RUNNING</dd></dl><label class="range-label">Throttle <output id="throttleOut">31%</output><input id="throttle" type="range" min="0" max="100" value="31" list="throttleMarks"><datalist id="throttleMarks"><option value="31" label="hover"></option></datalist><small>Estimated hover 31%</small></label></section><details open><summary>CONTROLLER</summary><div class="segmented"><button data-profile="BEGINNER" class="active">BEGINNER</button><button data-profile="SPORT">SPORT</button><button data-profile="CUSTOM">CUSTOM</button></div><div class="response-grid"><label>Roll rate °/s<input data-response="roll" type="number" min="20" max="720" value="130"></label><label>Pitch rate °/s<input data-response="pitch" type="number" min="20" max="720" value="130"></label><label>Yaw rate °/s<input data-response="yaw" type="number" min="20" max="540" value="100"></label><label>Angle limit °<input data-response="angle" type="number" min="5" max="80" value="30"></label><label>Expo<input data-response="expo" type="number" min="0" max="1" step=".05" value=".55"></label><label>Attack /s<input data-response="attack" type="number" min=".2" max="10" step=".1" value="1.6"></label><label>Release /s<input data-response="release" type="number" min=".2" max="10" step=".1" value="3.2"></label></div><div id="axisTelemetry" class="axis-telemetry"></div><canvas id="graph" width="260" height="92"></canvas><label>Graph axis <select id="graphAxis"><option value="0">Roll</option><option value="1">Pitch</option><option value="2">Yaw</option></select></label><div id="pidGrid" class="pid-grid"></div><button id="pidReset">Reset safe defaults</button></details><details><summary>GAMEPAD & CALIBRATION</summary><p id="gamepadState" class="note">No controller connected</p><div id="gamepadAxes"></div><button id="captureCenter">Capture centers</button><button id="captureRange">Reset travel capture</button><p class="note">Centre, then move every stick through full travel. Calibration stays in this browser.</p></details><details><summary>VIEW & PHYSICS</summary><label><input id="vectors" type="checkbox" checked> Force vectors</label><label>Chase distance <input id="chaseDistance" type="range" min="1.2" max="5" step=".1" value="2.4"></label><label>FOV <input id="fov" type="range" min="45" max="95" value="62"></label></details></aside></main><footer><span id="status">Initializing physics core…</span><div><button id="pause">Pause</button><select id="spawn"><option value="air">AIRBORNE</option><option value="ground">GROUND</option></select><button id="reset">Reset aircraft</button></div></footer>`;
+root.innerHTML = `<header><div><strong>WASM FLIGHT LAB</strong><small>Design it. Fly it. Break it. Understand it.</small></div><nav><button class="active">FLY</button><button disabled>BUILD</button><button disabled>MISSION</button><button disabled>ANALYZE</button></nav></header><main><section id="viewport"><div class="badge">LIVE · WASM 250 Hz</div><div class="toolbar"><span>MODE</span><button data-mode="ACRO" class="active">ACRO</button><button data-mode="ANGLE">ANGLE</button><span>CAMERA</span><button data-camera="CHASE" class="active">CHASE</button><button data-camera="FPV">FPV</button><button data-camera="FREE">FREE</button></div><div class="help">W/S throttle · A/D roll · ↑/↓ pitch · Q/E yaw · Space pause · R reset</div><div class="attitude"><i id="horizon"></i><span id="attitudeText">LEVEL</span></div></section><aside><section><h2>FLIGHT DATA</h2><dl><dt>Aircraft</dt><dd>Beginner Quad</dd><dt>Flight mode</dt><dd id="modeReadout">ACRO</dd><dt>Altitude</dt><dd id="alt">—</dd><dt>Ground speed</dt><dd id="speed">—</dd><dt>Airspeed</dt><dd id="airspeed">—</dd><dt>Vertical speed</dt><dd id="vertical">—</dd><dt>Attitude R / P / Y</dt><dd id="angles">—</dd><dt>Simulation</dt><dd id="simState">RUNNING</dd></dl><label class="range-label">Throttle <output id="throttleOut">31%</output><input id="throttle" type="range" min="0" max="100" value="31" list="throttleMarks"><datalist id="throttleMarks"><option value="31" label="hover"></option></datalist><small>Estimated hover 31%</small></label></section><details open><summary>CONTROLLER</summary><div class="segmented"><button data-profile="BEGINNER" class="active">BEGINNER</button><button data-profile="SPORT">SPORT</button><button data-profile="CUSTOM">CUSTOM</button></div><div class="response-grid"><label>Roll rate °/s<input data-response="roll" type="number" min="20" max="720" value="130"></label><label>Pitch rate °/s<input data-response="pitch" type="number" min="20" max="720" value="130"></label><label>Yaw rate °/s<input data-response="yaw" type="number" min="20" max="540" value="100"></label><label>Angle limit °<input data-response="angle" type="number" min="5" max="80" value="30"></label><label>Expo<input data-response="expo" type="number" min="0" max="1" step=".05" value=".55"></label><label>Attack /s<input data-response="attack" type="number" min=".2" max="10" step=".1" value="1.6"></label><label>Release /s<input data-response="release" type="number" min=".2" max="10" step=".1" value="3.2"></label></div><div id="axisTelemetry" class="axis-telemetry"></div><canvas id="graph" width="260" height="92"></canvas><label>Graph axis <select id="graphAxis"><option value="0">Roll</option><option value="1">Pitch</option><option value="2">Yaw</option></select></label><div id="pidGrid" class="pid-grid"></div><button id="pidReset">Reset safe defaults</button></details><details><summary>GAMEPAD & CALIBRATION</summary><p id="gamepadState" class="note">No controller connected</p><div id="gamepadAxes"></div><button id="captureCenter">Capture centers</button><button id="captureRange">Reset travel capture</button><p class="note">Centre, then move every stick through full travel. Calibration stays in this browser.</p></details><details><summary>VIEW & PHYSICS</summary><label><input id="vectors" type="checkbox" checked> Total forces</label><label><input id="motorVectors" type="checkbox"> Individual motor thrust</label><label>Known attitude <select id="knownAttitude"><option value="0,0">LEVEL</option><option value="30,0">ROLL +30°</option><option value="-30,0">ROLL -30°</option><option value="0,30">PITCH +30°</option><option value="0,-30">PITCH -30°</option></select></label><label>Chase distance <input id="chaseDistance" type="range" min="1.2" max="5" step=".1" value="2.4"></label><label>FOV <input id="fov" type="range" min="45" max="95" value="62"></label></details></aside></main><footer><span id="status">Initializing physics core…</span><div><button id="pause">Pause</button><select id="spawn"><option value="air">AIRBORNE</option><option value="ground">GROUND</option></select><button id="reset">Reset aircraft</button></div></footer>`;
+const [flyNav, buildNav] = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("nav button"),
+);
+document
+  .querySelector("aside section dl")!
+  .insertAdjacentHTML(
+    "beforeend",
+    '<dt>Battery</dt><dd id="battery">—</dd><dt>Remaining</dt><dd id="batteryRemaining">—</dd>',
+  );
+buildNav.disabled = false;
+const flyView = document.querySelector<HTMLElement>("main")!;
+flyView.id = "flyView";
 await init();
 const sim = new FlightSimulator();
 let state: SimState = JSON.parse(sim.state_json());
+let activeBatteryCapacityMah = (
+  JSON.parse(sim.vehicle_definition_json()) as {
+    battery: { capacityMah: number };
+  }
+).battery.capacityMah;
 const view = document.querySelector<HTMLElement>("#viewport")!,
   scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8fb9cf);
@@ -74,6 +98,7 @@ const craft = new THREE.Group(),
   );
 body.castShadow = true;
 craft.add(body);
+const flightMotorVisuals: THREE.Object3D[] = [];
 for (const [x, z] of [
   [0.18, 0.18],
   [0.18, -0.18],
@@ -97,6 +122,7 @@ for (const [x, z] of [
   );
   rotor.position.set(x, 0.045, z);
   craft.add(rotor);
+  flightMotorVisuals.push(rotor);
 }
 scene.add(craft);
 const thrustArrow = new THREE.ArrowHelper(
@@ -110,8 +136,43 @@ const thrustArrow = new THREE.ArrowHelper(
     new THREE.Vector3(),
     1,
     0xffcf4a,
+  ),
+  gravityArrow = new THREE.ArrowHelper(
+    new THREE.Vector3(0, -1, 0),
+    new THREE.Vector3(),
+    1,
+    0xff6f91,
+  ),
+  liftArrow = new THREE.ArrowHelper(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(),
+    1,
+    0x79f2a6,
+  ),
+  dragArrow = new THREE.ArrowHelper(
+    new THREE.Vector3(0, 0, 1),
+    new THREE.Vector3(),
+    1,
+    0xc28cff,
   );
-scene.add(thrustArrow, velocityArrow);
+const motorArrows = Array.from(
+  { length: 4 },
+  () =>
+    new THREE.ArrowHelper(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(),
+      0.2,
+      0xffd166,
+    ),
+);
+scene.add(
+  thrustArrow,
+  velocityArrow,
+  gravityArrow,
+  liftArrow,
+  dragArrow,
+  ...motorArrows,
+);
 let profile: ControlProfile = {
     ...PROFILES.BEGINNER,
     rates: [...PROFILES.BEGINNER.rates],
@@ -254,9 +315,53 @@ function reset() {
   accumulator = 0;
   history.length = 0;
 }
+const workshop = setupWorkshop(root, sim, (definition) => {
+  workshop.hide();
+  flyView.hidden = false;
+  flyNav.classList.add("active");
+  buildNav.classList.remove("active");
+  activeBatteryCapacityMah = definition.battery.capacityMah;
+  body.scale.set(
+    definition.frame.bodyDimensionsM[1] / 0.38,
+    definition.frame.bodyDimensionsM[2] / 0.13,
+    definition.frame.bodyDimensionsM[0] / 0.28,
+  );
+  definition.motors.forEach((motor, i) =>
+    flightMotorVisuals[i]?.position.copy(bodyVectorToModel(motor.positionM)),
+  );
+  document.querySelector("aside dl dd")!.textContent = definition.name;
+  const engineering = JSON.parse(sim.engineering_metrics_json()) as {
+    hoverThrottle: number;
+  };
+  reset();
+  collective = Math.min(1, engineering.hoverThrottle);
+  throttle.value = String(Math.round(collective * 100));
+  throttleOut.value = `${Math.round(collective * 100)}%`;
+  view.dataset.vehicleDefinition = sim.vehicle_definition_json();
+});
+flyNav.onclick = () => {
+  workshop.hide();
+  flyView.hidden = false;
+  flyNav.classList.add("active");
+  buildNav.classList.remove("active");
+};
+buildNav.onclick = () => {
+  flyView.hidden = true;
+  workshop.show();
+  flyNav.classList.remove("active");
+  buildNav.classList.add("active");
+};
 document.querySelector<HTMLInputElement>("#fov")!.oninput = (e) => {
   camera.fov = Number((e.target as HTMLInputElement).value);
   camera.updateProjectionMatrix();
+};
+document.querySelector<HTMLSelectElement>("#knownAttitude")!.onchange = (
+  event,
+) => {
+  const [roll, pitch] = (event.target as HTMLSelectElement).value
+    .split(",")
+    .map(Number);
+  sim.set_attitude_degrees(roll, pitch, 0);
 };
 const tuning: Record<"roll" | "pitch" | "yaw", [number, number, number]> = {
     roll: [0.025, 0.008, 0.002],
@@ -455,7 +560,7 @@ function updateCamera() {
     document.querySelector<HTMLInputElement>("#chaseDistance")!.value,
   );
   if (cameraMode === "CHASE") {
-    const behind = new THREE.Vector3(0, 1, -distance).applyQuaternion(
+    const behind = new THREE.Vector3(0, 1, distance).applyQuaternion(
       craft.quaternion,
     );
     chasePosition.copy(craft.position).add(behind);
@@ -463,12 +568,11 @@ function updateCamera() {
     camera.position.lerp(chasePosition, 0.09);
     camera.lookAt(craft.position.clone().add(new THREE.Vector3(0, 0.12, 0)));
   } else if (cameraMode === "FPV") {
-    const mount = new THREE.Vector3(0, 0.06, 0.16).applyQuaternion(
+    const mount = new THREE.Vector3(0, 0.06, -0.16).applyQuaternion(
       craft.quaternion,
     );
     camera.position.copy(craft.position).add(mount);
     camera.quaternion.copy(craft.quaternion);
-    camera.rotateY(Math.PI);
   } else {
     orbit.target.lerp(craft.position, 0.03);
     orbit.update();
@@ -486,6 +590,10 @@ function updateHud() {
   document.querySelector("#airspeed")!.textContent = `${speed.toFixed(1)} m/s`;
   document.querySelector("#vertical")!.textContent =
     `${(-state.velocity[2]).toFixed(1)} m/s`;
+  document.querySelector("#battery")!.textContent =
+    `${state.battery.voltage.toFixed(1)} V · ${state.battery.current.toFixed(1)} A`;
+  document.querySelector("#batteryRemaining")!.textContent =
+    `${Math.max(0, (state.battery.remainingMah / activeBatteryCapacityMah) * 100).toFixed(0)}%`;
   document.querySelector("#angles")!.textContent = angles
     .map((v) => `${v.toFixed(0)}°`)
     .join(" / ");
@@ -525,30 +633,53 @@ function frame(now: number) {
     accumulator -= DT;
   }
   state = JSON.parse(sim.state_json()) as SimState;
-  craft.position.set(state.position[1], -state.position[2], state.position[0]);
-  craft.quaternion.set(
-    state.attitude[1],
-    -state.attitude[2],
-    -state.attitude[0],
-    state.attitude[3],
-  );
-  thrustArrow.position.copy(craft.position);
-  thrustArrow.setLength(
-    Math.max(0.01, Math.hypot(...state.forces.thrust) / 12),
-  );
-  velocityArrow.position.copy(craft.position);
-  const velocity = new THREE.Vector3(
-    state.velocity[1],
-    -state.velocity[2],
-    state.velocity[0],
-  );
-  if (velocity.lengthSq() > 0.001) {
-    velocityArrow.setDirection(velocity.normalize());
-    velocityArrow.setLength(Math.min(4, Math.hypot(...state.velocity) * 0.25));
-  }
+  nedPositionToThree(state.position, craft.position);
+  attitudeBodyToNedToThree(state.attitude, craft.quaternion);
+  const setArrow = (
+    arrow: THREE.ArrowHelper,
+    vector: [number, number, number],
+    scale: number,
+  ) => {
+    const converted = nedVectorToThree(vector);
+    const magnitude = converted.length();
+    if (magnitude > 1e-9) arrow.setDirection(converted.normalize());
+    arrow.setLength(Math.max(0.01, magnitude * scale));
+    arrow.position.copy(craft.position);
+  };
+  setArrow(thrustArrow, state.forces.thrust, 1 / 12);
+  setArrow(gravityArrow, state.forces.gravity, 1 / 12);
+  setArrow(liftArrow, state.forces.lift, 1 / 12);
+  setArrow(dragArrow, state.forces.drag, 1 / 3);
+  setArrow(velocityArrow, state.velocity, 0.25);
+  const thrustDirection = nedVectorToThree(state.forces.thrust).normalize();
+  const modelThrustDirection = new THREE.Vector3(0, 1, 0)
+    .applyQuaternion(craft.quaternion)
+    .normalize();
+  view.dataset.thrustDirection = thrustDirection.toArray().join(",");
+  view.dataset.modelThrustDirection = modelThrustDirection.toArray().join(",");
+  view.dataset.velocityDirection = nedVectorToThree(state.velocity)
+    .normalize()
+    .toArray()
+    .join(",");
+  state.forces.motors.forEach((motor, index) => {
+    const arrow = motorArrows[index];
+    const origin = bodyVectorToModel(motor.positionBody)
+      .applyQuaternion(craft.quaternion)
+      .add(craft.position);
+    const force = nedVectorToThree(motor.forceNed);
+    arrow.position.copy(origin);
+    if (force.lengthSq() > 1e-12) arrow.setDirection(force.normalize());
+    arrow.setLength(Math.max(0.01, Math.hypot(...motor.forceNed) / 8));
+  });
   const vectors = document.querySelector<HTMLInputElement>("#vectors")!.checked;
   thrustArrow.visible = vectors;
   velocityArrow.visible = vectors;
+  gravityArrow.visible = vectors;
+  liftArrow.visible = vectors && Math.hypot(...state.forces.lift) > 0.01;
+  dragArrow.visible = vectors && Math.hypot(...state.forces.drag) > 0.01;
+  const showMotors =
+    document.querySelector<HTMLInputElement>("#motorVectors")!.checked;
+  motorArrows.forEach((arrow) => (arrow.visible = showMotors));
   updateCamera();
   updateHud();
   renderer.render(scene, camera);

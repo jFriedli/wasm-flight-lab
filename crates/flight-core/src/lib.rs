@@ -5,7 +5,9 @@ use glam::{DQuat, DVec3};
 use serde::{Deserialize, Serialize};
 
 pub mod control;
+pub mod vehicle;
 use control::FlightController;
+use vehicle::{BatteryDefinition, VehicleDefinition};
 
 pub const GRAVITY: f64 = 9.806_65;
 pub const SEA_LEVEL_DENSITY: f64 = 1.225;
@@ -18,6 +20,10 @@ pub struct Motor {
     pub reaction_torque_nm: f64,
     pub spin: f64,
     pub command: f64,
+    pub actual_output: f64,
+    pub spin_up_time_s: f64,
+    pub spin_down_time_s: f64,
+    pub max_power_w: f64,
     pub effectiveness: f64,
 }
 
@@ -45,6 +51,7 @@ pub struct Vehicle {
     pub motors: Vec<Motor>,
     pub wings: Vec<Wing>,
     pub inertia_kg_m2: DVec3,
+    pub battery: BatteryDefinition,
 }
 
 impl Vehicle {
@@ -112,6 +119,7 @@ pub struct ForceBreakdown {
     pub lift: DVec3,
     pub drag: DVec3,
     pub torque_body: DVec3,
+    pub motor_thrust_ned: Vec<DVec3>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -194,17 +202,32 @@ pub struct Simulator {
     pub environment: Environment,
     pub forces: ForceBreakdown,
     pub controller: FlightController,
+    pub battery_state: BatteryState,
     control_sticks: DVec3,
     throttle: f64,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct BatteryState {
+    pub remaining_mah: f64,
+    pub consumed_wh: f64,
+    pub voltage_v: f64,
+    pub current_a: f64,
+}
 impl Simulator {
     pub fn new(vehicle: Vehicle) -> Self {
+        let battery_state = BatteryState {
+            remaining_mah: vehicle.battery.capacity_mah,
+            consumed_wh: 0.0,
+            voltage_v: vehicle.battery.nominal_voltage(),
+            current_a: 0.0,
+        };
         Self {
             vehicle,
             state: State::default(),
             environment: Environment::default(),
             forces: ForceBreakdown::default(),
             controller: FlightController::default(),
+            battery_state,
             control_sticks: DVec3::ZERO,
             throttle: 0.0,
         }
@@ -228,7 +251,29 @@ impl Simulator {
             .update(self.control_sticks, self.throttle, &self.state, dt);
         for (motor, command) in self.vehicle.motors.iter_mut().zip(commands) {
             motor.command = command;
+            let tau = if command > motor.actual_output {
+                motor.spin_up_time_s
+            } else {
+                motor.spin_down_time_s
+            };
+            let alpha = 1.0 - (-dt / tau.max(0.005)).exp();
+            motor.actual_output += (command - motor.actual_output) * alpha;
         }
+        let power_w = self
+            .vehicle
+            .motors
+            .iter()
+            .map(|motor| motor.max_power_w * motor.actual_output.powf(1.5))
+            .sum::<f64>();
+        let soc = (self.battery_state.remaining_mah / self.vehicle.battery.capacity_mah).clamp(0.0, 1.0);
+        let open_voltage = f64::from(self.vehicle.battery.cells) * (3.3 + 0.9 * soc);
+        self.battery_state.current_a = power_w / open_voltage.max(1.0);
+        self.battery_state.voltage_v = (open_voltage
+            - self.battery_state.current_a * self.vehicle.battery.internal_resistance_ohm)
+            .max(f64::from(self.vehicle.battery.cells) * 2.8);
+        self.battery_state.remaining_mah =
+            (self.battery_state.remaining_mah - self.battery_state.current_a * dt / 3.6).max(0.0);
+        self.battery_state.consumed_wh += power_w * dt / 3600.0;
         let mass = self.vehicle.mass();
         let q = self.state.attitude_body_to_ned;
         let com = self.vehicle.center_of_mass();
@@ -237,14 +282,18 @@ impl Simulator {
             ..Default::default()
         };
         for m in &self.vehicle.motors {
+            let voltage_factor =
+                (self.battery_state.voltage_v / self.vehicle.battery.nominal_voltage()).clamp(0.4, 1.1);
             let thrust = m.max_thrust_n
-                * m.command.clamp(0.0, 1.0)
+                * m.actual_output.clamp(0.0, 1.0)
                 * m.effectiveness.clamp(0.0, 1.0)
-                * (self.environment.density_kg_m3 / SEA_LEVEL_DENSITY);
+                * (self.environment.density_kg_m3 / SEA_LEVEL_DENSITY)
+                * voltage_factor;
             let fb = m.direction.normalize_or_zero() * thrust;
             f.thrust += q * fb;
+            f.motor_thrust_ned.push(q * fb);
             f.torque_body += (m.position - com).cross(fb)
-                + m.direction.normalize_or_zero() * m.reaction_torque_nm * m.spin * m.command;
+                + m.direction.normalize_or_zero() * m.reaction_torque_nm * m.spin * m.actual_output;
         }
         let air_ned = self.state.velocity_ned_mps - self.environment.wind_ned_mps;
         let air_body = q.conjugate() * air_ned;
@@ -284,37 +333,9 @@ impl Simulator {
 }
 
 pub fn beginner_quad() -> Vehicle {
-    let arm = 0.18;
-    let motor = |x, y, spin| Motor {
-        position: DVec3::new(x, y, 0.0),
-        direction: -DVec3::Z,
-        max_thrust_n: 8.0,
-        reaction_torque_nm: 0.12,
-        spin,
-        command: 0.38,
-        effectiveness: 1.0,
-    };
-    Vehicle {
-        name: "Beginner Quad".into(),
-        masses: vec![
-            ComponentMass {
-                mass_kg: 0.72,
-                position: DVec3::ZERO,
-            },
-            ComponentMass {
-                mass_kg: 0.28,
-                position: DVec3::new(0.0, 0.0, 0.02),
-            },
-        ],
-        motors: vec![
-            motor(arm, arm, 1.0),
-            motor(arm, -arm, -1.0),
-            motor(-arm, -arm, 1.0),
-            motor(-arm, arm, -1.0),
-        ],
-        wings: vec![],
-        inertia_kg_m2: DVec3::new(0.025, 0.025, 0.045),
-    }
+    VehicleDefinition::beginner()
+        .to_vehicle()
+        .expect("built-in preset must be valid")
 }
 
 #[cfg(test)]
@@ -323,11 +344,13 @@ mod tests {
     #[test]
     fn center_of_mass_is_physical() {
         let mut v = beginner_quad();
+        let old_mass = v.mass();
+        let old_moment = v.center_of_mass().x * old_mass;
         v.masses.push(ComponentMass {
             mass_kg: 1.0,
             position: DVec3::X,
         });
-        assert!((v.center_of_mass().x - 0.5).abs() < 1e-9);
+        assert!((v.center_of_mass().x - (old_moment + 1.0) / (old_mass + 1.0)).abs() < 1e-9);
     }
     #[test]
     fn gravity_accelerates_down() {
@@ -341,7 +364,13 @@ mod tests {
     }
     #[test]
     fn symmetric_quad_has_near_zero_torque() {
-        let mut s = Simulator::new(beginner_quad());
+        let mut vehicle = beginner_quad();
+        vehicle.masses[1].position = DVec3::ZERO;
+        vehicle.masses.last_mut().unwrap().position = DVec3::ZERO;
+        let mut s = Simulator::new(vehicle);
+        for motor in &mut s.vehicle.motors {
+            motor.actual_output = 0.4;
+        }
         s.set_control(DVec3::ZERO, 0.4);
         s.step(0.004);
         assert!(s.forces.torque_body.length() < 1e-10);
@@ -351,6 +380,9 @@ mod tests {
         let mut v = beginner_quad();
         v.motors[0].effectiveness = 0.0;
         let mut s = Simulator::new(v);
+        for motor in &mut s.vehicle.motors {
+            motor.actual_output = 0.4;
+        }
         s.set_control(DVec3::ZERO, 0.4);
         s.step(0.004);
         assert!(s.forces.torque_body.length() > 0.1);
@@ -380,5 +412,93 @@ mod tests {
         let mut v = beginner_quad();
         v.masses[0].mass_kg = f64::NAN;
         assert!(v.validate().is_err());
+    }
+    fn thrust_at(attitude: DQuat) -> DVec3 {
+        let mut sim = Simulator::new(beginner_quad());
+        sim.state.attitude_body_to_ned = attitude;
+        for motor in &mut sim.vehicle.motors {
+            motor.actual_output = 0.5;
+        }
+        sim.set_control(DVec3::ZERO, 0.5);
+        sim.step(0.004);
+        sim.forces.thrust
+    }
+    #[test]
+    fn level_thrust_points_up_in_ned() {
+        let thrust = thrust_at(DQuat::IDENTITY);
+        assert!(thrust.x.abs() < 1e-12 && thrust.y.abs() < 1e-12);
+        assert!(thrust.z < -15.0);
+    }
+    #[test]
+    fn positive_roll_rotates_thrust_toward_positive_east() {
+        let angle = 30_f64.to_radians();
+        let thrust = thrust_at(DQuat::from_rotation_x(angle));
+        let magnitude = thrust.length();
+        assert!(thrust.x.abs() < 1e-12);
+        assert!((thrust.y - magnitude * angle.sin()).abs() < 1e-10);
+        assert!((thrust.z + magnitude * angle.cos()).abs() < 1e-10);
+    }
+    #[test]
+    fn positive_pitch_rotates_thrust_toward_south() {
+        let angle = 30_f64.to_radians();
+        let thrust = thrust_at(DQuat::from_rotation_y(angle));
+        let magnitude = thrust.length();
+        assert!((thrust.x + magnitude * angle.sin()).abs() < 1e-10);
+        assert!(thrust.y.abs() < 1e-12);
+        assert!((thrust.z + magnitude * angle.cos()).abs() < 1e-10);
+    }
+    #[test]
+    fn yaw_rotates_tilted_horizontal_thrust_in_ned() {
+        let roll = 30_f64.to_radians();
+        let yaw = 90_f64.to_radians();
+        let attitude = DQuat::from_rotation_z(yaw) * DQuat::from_rotation_x(roll);
+        let thrust = thrust_at(attitude);
+        let magnitude = thrust.length();
+        assert!((thrust.x + magnitude * roll.sin()).abs() < 1e-10);
+        assert!(thrust.y.abs() < 1e-10);
+        assert!((thrust.z + magnitude * roll.cos()).abs() < 1e-10);
+    }
+    #[test]
+    fn arbitrary_attitude_matches_glam_body_to_world_rotation() {
+        let attitude = DQuat::from_euler(glam::EulerRot::ZYX, 0.73, -0.31, 0.44);
+        let actual = thrust_at(attitude);
+        let expected = attitude * DVec3::new(0.0, 0.0, -actual.length());
+        assert!((actual - expected).length() < 1e-10);
+    }
+    #[test]
+    fn motor_output_has_first_order_lag() {
+        let mut sim = Simulator::new(beginner_quad());
+        sim.set_control(DVec3::ZERO, 1.0);
+        sim.step(0.004);
+        let first = sim.vehicle.motors[0].actual_output;
+        assert!(first > 0.0 && first < 0.2);
+        for _ in 0..300 {
+            sim.step(0.004);
+        }
+        assert!(sim.vehicle.motors[0].actual_output > 0.9);
+    }
+    #[test]
+    fn sustained_power_drains_battery() {
+        let mut sim = Simulator::new(beginner_quad());
+        let initial = sim.battery_state.remaining_mah;
+        sim.set_control(DVec3::ZERO, 0.7);
+        for _ in 0..500 {
+            sim.step(0.004);
+        }
+        assert!(sim.battery_state.remaining_mah < initial);
+        assert!(sim.battery_state.consumed_wh > 0.0);
+        assert!(sim.battery_state.current_a > 0.0);
+    }
+    #[test]
+    fn higher_motor_power_drains_energy_faster() {
+        let run = |throttle| {
+            let mut sim = Simulator::new(beginner_quad());
+            sim.set_control(DVec3::ZERO, throttle);
+            for _ in 0..500 {
+                sim.step(0.004);
+            }
+            sim.battery_state.consumed_wh
+        };
+        assert!(run(0.8) > run(0.4) * 2.0);
     }
 }
