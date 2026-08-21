@@ -2,10 +2,11 @@
 name = "flight-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "../../LICENSE"
+repository.workspace = true
+description = "Native deterministic flight dynamics core for WASM Flight Lab"
 
 [dependencies]
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-

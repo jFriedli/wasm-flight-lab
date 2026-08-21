@@ -4,6 +4,9 @@
 use glam::{DQuat, DVec3};
 use serde::{Deserialize, Serialize};
 
+pub mod control;
+use control::FlightController;
+
 pub const GRAVITY: f64 = 9.806_65;
 pub const SEA_LEVEL_DENSITY: f64 = 1.225;
 
@@ -137,30 +140,51 @@ pub struct Pid {
     pub ki: f64,
     pub kd: f64,
     pub integral_limit: f64,
+    pub output_limit: f64,
     integral: f64,
-    previous_error: f64,
+    previous_measurement: f64,
+    filtered_derivative: f64,
 }
 impl Pid {
-    pub fn new(kp: f64, ki: f64, kd: f64, limit: f64) -> Self {
+    pub fn new(kp: f64, ki: f64, kd: f64, integral_limit: f64, output_limit: f64) -> Self {
         Self {
             kp,
             ki,
             kd,
-            integral_limit: limit,
+            integral_limit,
+            output_limit,
             integral: 0.0,
-            previous_error: 0.0,
+            previous_measurement: 0.0,
+            filtered_derivative: 0.0,
         }
     }
+    pub fn set_gains(&mut self, kp: f64, ki: f64, kd: f64, output_limit: f64) {
+        self.kp = kp;
+        self.ki = ki;
+        self.kd = kd;
+        self.output_limit = output_limit;
+    }
     pub fn update(&mut self, target: f64, actual: f64, dt: f64) -> f64 {
+        if !target.is_finite() || !actual.is_finite() || !dt.is_finite() || dt <= 0.0 {
+            return 0.0;
+        }
         let e = target - actual;
-        self.integral = (self.integral + e * dt).clamp(-self.integral_limit, self.integral_limit);
-        let d = (e - self.previous_error) / dt;
-        self.previous_error = e;
-        self.kp * e + self.ki * self.integral + self.kd * d
+        let derivative = -(actual - self.previous_measurement) / dt;
+        let alpha = dt / (0.02 + dt);
+        self.filtered_derivative += alpha * (derivative - self.filtered_derivative);
+        self.previous_measurement = actual;
+        let candidate = (self.integral + e * dt).clamp(-self.integral_limit, self.integral_limit);
+        let unsaturated = self.kp * e + self.ki * candidate + self.kd * self.filtered_derivative;
+        let saturated = unsaturated.clamp(-self.output_limit, self.output_limit);
+        if unsaturated == saturated || e.signum() != unsaturated.signum() {
+            self.integral = candidate;
+        }
+        saturated
     }
     pub fn reset(&mut self) {
         self.integral = 0.0;
-        self.previous_error = 0.0;
+        self.previous_measurement = 0.0;
+        self.filtered_derivative = 0.0;
     }
 }
 
@@ -169,6 +193,9 @@ pub struct Simulator {
     pub state: State,
     pub environment: Environment,
     pub forces: ForceBreakdown,
+    pub controller: FlightController,
+    control_sticks: DVec3,
+    throttle: f64,
 }
 impl Simulator {
     pub fn new(vehicle: Vehicle) -> Self {
@@ -177,10 +204,31 @@ impl Simulator {
             state: State::default(),
             environment: Environment::default(),
             forces: ForceBreakdown::default(),
+            controller: FlightController::default(),
+            control_sticks: DVec3::ZERO,
+            throttle: 0.0,
         }
+    }
+    pub fn set_control(&mut self, sticks: DVec3, throttle: f64) {
+        self.control_sticks = if sticks.is_finite() {
+            sticks.clamp(DVec3::splat(-1.0), DVec3::ONE)
+        } else {
+            DVec3::ZERO
+        };
+        self.throttle = if throttle.is_finite() {
+            throttle.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
     pub fn step(&mut self, dt: f64) {
         let dt = dt.clamp(0.0001, 0.02);
+        let commands = self
+            .controller
+            .update(self.control_sticks, self.throttle, &self.state, dt);
+        for (motor, command) in self.vehicle.motors.iter_mut().zip(commands) {
+            motor.command = command;
+        }
         let mass = self.vehicle.mass();
         let q = self.state.attitude_body_to_ned;
         let com = self.vehicle.center_of_mass();
@@ -294,6 +342,7 @@ mod tests {
     #[test]
     fn symmetric_quad_has_near_zero_torque() {
         let mut s = Simulator::new(beginner_quad());
+        s.set_control(DVec3::ZERO, 0.4);
         s.step(0.004);
         assert!(s.forces.torque_body.length() < 1e-10);
     }
@@ -302,22 +351,25 @@ mod tests {
         let mut v = beginner_quad();
         v.motors[0].effectiveness = 0.0;
         let mut s = Simulator::new(v);
+        s.set_control(DVec3::ZERO, 0.4);
         s.step(0.004);
         assert!(s.forces.torque_body.length() > 0.1);
     }
     #[test]
     fn density_reduces_thrust() {
         let mut a = Simulator::new(beginner_quad());
+        a.set_control(DVec3::ZERO, 0.4);
         a.step(0.004);
         let sea = a.forces.thrust.length();
         let mut b = Simulator::new(beginner_quad());
+        b.set_control(DVec3::ZERO, 0.4);
         b.environment.density_kg_m3 = 0.8;
         b.step(0.004);
         assert!(b.forces.thrust.length() < sea);
     }
     #[test]
     fn pid_integral_is_bounded() {
-        let mut p = Pid::new(0., 1., 0., 0.5);
+        let mut p = Pid::new(0., 1., 0., 0.5, 0.5);
         for _ in 0..100 {
             p.update(10., 0., 0.1);
         }

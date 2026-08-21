@@ -2,7 +2,9 @@
 name = "flight-wasm"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "../../LICENSE"
+repository.workspace = true
+description = "WebAssembly boundary for WASM Flight Lab"
 [lib]
 crate-type = ["cdylib", "rlib"]
 [dependencies]
@@ -11,4 +13,3 @@ glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen.workspace = true
-
