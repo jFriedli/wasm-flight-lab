@@ -24,6 +24,8 @@ Angle mode creates bounded roll/pitch targets and obtains current orientation fr
 
 BUILD keeps a mutable, serializable definition separate from transient `Simulator` state. Each valid edit is revalidated and configured in Rust, while preview transforms update locally. TEST FLIGHT resets runtime state from that exact definition. Returning to BUILD retains it. Designs use bounded, versioned JSON in localStorage; imports are size/range/count checked in TypeScript and parsed again by Rust with unknown fields denied. Imported text is data only.
 
-Aerodynamic surfaces and propulsion are shared components. A future QuadPlane can therefore combine horizontal aerodynamic surfaces, forward propulsion and four vertical propulsion units; a tiltrotor can make propulsion orientation dynamic without introducing a second rigid-body simulator.
+Aerodynamic surfaces and propulsion are shared components. QuadPlane composes horizontal surfaces, one forward propulsor and four vertical propulsors. Tiltrotor uses the same force loop with rate-limited propulsion orientation. There is no hover/cruise physics switch: transition changes allocation and force direction while all forces remain active.
+
+`TerrainDefinition` is authoritative Rust state. Its seeded height/normal queries feed 250 Hz contact and are exported through the thin WASM boundary. The renderer samples that exact function once to construct a 128×128 indexed mesh; landmarks and instanced trees are deterministic presentation layers. The minimap reuses the height sampler and compact per-frame NED position/yaw.
 
 Chase, fixed-mount FPV and free-orbit cameras consume render state and never feed physics. The FPV transform can later come from a BUILD camera component. Future sensors have independent rate schedulers.

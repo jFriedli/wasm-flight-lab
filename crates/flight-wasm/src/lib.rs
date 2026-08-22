@@ -1,6 +1,7 @@
 use flight_core::{
-    Simulator,
+    PropulsionRole, Simulator,
     control::{AxisTuning, ControlConfig, DEG_TO_RAD, FlightMode},
+    terrain::{DEFAULT_TERRAIN_SEED, TerrainDefinition, TerrainKind},
     vehicle::VehicleDefinition,
 };
 use wasm_bindgen::prelude::*;
@@ -25,6 +26,32 @@ impl FlightSimulator {
     pub fn set_control(&mut self, roll: f64, pitch: f64, yaw: f64, throttle: f64) {
         self.inner
             .set_control(glam::DVec3::new(roll, pitch, yaw), throttle);
+    }
+    pub fn set_transition(&mut self, transition: f64) {
+        self.inner.set_transition(transition);
+    }
+    pub fn set_environment(&mut self, alpine: bool, seed: u32) {
+        self.inner.environment.terrain = TerrainDefinition {
+            kind: if alpine {
+                TerrainKind::AlpineRange
+            } else {
+                TerrainKind::TestRange
+            },
+            seed,
+        };
+    }
+    pub fn terrain_height(&self, north_m: f64, east_m: f64) -> f64 {
+        if !north_m.is_finite() || !east_m.is_finite() {
+            return 0.0;
+        }
+        self.inner.environment.terrain.elevation_m(north_m, east_m)
+    }
+    pub fn terrain_normal_json(&self, north_m: f64, east_m: f64) -> String {
+        let normal = self.inner.environment.terrain.normal_up_ned(north_m, east_m);
+        serde_json::to_string(&normal.to_array()).expect("normal serializes")
+    }
+    pub fn default_terrain_seed() -> u32 {
+        DEFAULT_TERRAIN_SEED
     }
     pub fn set_mode(&mut self, angle: bool) {
         self.inner.controller.mode = if angle {
@@ -63,11 +90,13 @@ impl FlightSimulator {
         }
     }
     pub fn reset(&mut self) {
+        let environment = self.inner.environment.clone();
         self.inner = Simulator::new(
             self.definition
                 .to_vehicle()
                 .expect("active definition was validated"),
         );
+        self.inner.environment = environment;
     }
     pub fn spawn(&mut self, airborne: bool) {
         self.reset();
@@ -92,6 +121,8 @@ impl FlightSimulator {
         let definition = match name {
             "freestyle" => VehicleDefinition::freestyle(),
             "trainer" => VehicleDefinition::fixed_wing_trainer(),
+            "quadplane" => VehicleDefinition::quadplane(),
+            "tiltrotor" => VehicleDefinition::tiltrotor(),
             _ => VehicleDefinition::beginner(),
         };
         serde_json::to_string(&definition).expect("preset serializes")
@@ -127,9 +158,95 @@ impl FlightSimulator {
             .state
             .attitude_body_to_ned
             .to_euler(glam::EulerRot::ZYX);
-        let motors = self.inner.vehicle.motors.iter().enumerate().map(|(index,motor)| serde_json::json!({"positionBody":motor.position.to_array(),"forceNed":self.inner.forces.motor_thrust_ned.get(index).copied().unwrap_or_default().to_array()})).collect::<Vec<_>>();
-        let surfaces = self.inner.forces.surface_forces.iter().map(|s|serde_json::json!({"name":s.name,"positionBody":s.position_body.to_array(),"liftNed":s.lift_ned.to_array(),"dragNed":s.drag_ned.to_array(),"angle":s.angle_rad,"cl":s.cl,"cd":s.cd,"stalled":s.stalled})).collect::<Vec<_>>();
-        serde_json::json!({"time":self.inner.state.sim_time_s,"vehicleClass":format!("{:?}",self.inner.vehicle.class),"position":self.inner.state.position_ned_m.to_array(),"velocity":self.inner.state.velocity_ned_mps.to_array(),"attitude":self.inner.state.attitude_body_to_ned.to_array(),"euler":[roll,pitch,yaw],"rates":self.inner.state.angular_rate_body_rps.to_array(),"airVelocity":self.inner.forces.air_velocity_ned.to_array(),"angleOfAttack":self.inner.forces.angle_of_attack_rad,"stalled":self.inner.forces.stalled,"forces":{"gravity":self.inner.forces.gravity.to_array(),"thrust":self.inner.forces.thrust.to_array(),"lift":self.inner.forces.lift.to_array(),"drag":self.inner.forces.drag.to_array(),"motors":motors,"surfaces":surfaces},"control":{"target":t.target_rate_rps.to_array(),"actual":t.actual_rate_rps.to_array(),"error":t.error_rps.to_array(),"output":t.output.to_array(),"throttle":self.inner.throttle(),"sticks":self.inner.control_sticks().to_array(),"motors":t.motors,"actualMotors":self.inner.vehicle.motors.iter().map(|motor|motor.actual_output).collect::<Vec<_>>()},"battery":{"remainingMah":self.inner.battery_state.remaining_mah,"consumedWh":self.inner.battery_state.consumed_wh,"voltage":self.inner.battery_state.voltage_v,"current":self.inner.battery_state.current_a},"mass":self.inner.vehicle.mass(),"cg":self.inner.vehicle.center_of_mass().to_array(),"inertia":self.inner.vehicle.inertia_kg_m2.to_array()}).to_string()
+        let motors = self
+            .inner
+            .vehicle
+            .motors
+            .iter()
+            .enumerate()
+            .map(|(index, motor)| {
+                serde_json::json!({
+                    "positionBody": motor.position.to_array(),
+                    "forceNed": self.inner.forces.motor_thrust_ned.get(index).copied().unwrap_or_default().to_array()
+                })
+            })
+            .collect::<Vec<_>>();
+        let surfaces = self
+            .inner
+            .forces
+            .surface_forces
+            .iter()
+            .map(|surface| {
+                serde_json::json!({
+                    "name": surface.name,
+                    "positionBody": surface.position_body.to_array(),
+                    "liftNed": surface.lift_ned.to_array(),
+                    "dragNed": surface.drag_ned.to_array(),
+                    "angle": surface.angle_rad,
+                    "cl": surface.cl,
+                    "cd": surface.cd,
+                    "stalled": surface.stalled,
+                    "commandedDeflection": surface.commanded_deflection_rad,
+                    "actualDeflection": surface.actual_deflection_rad
+                })
+            })
+            .collect::<Vec<_>>();
+        let terrain_height = self.inner.environment.terrain.elevation_m(
+            self.inner.state.position_ned_m.x,
+            self.inner.state.position_ned_m.y,
+        );
+        let (transition_command, transition_actual) = self.inner.transition();
+        let tilt_angle = self
+            .inner
+            .vehicle
+            .motors
+            .iter()
+            .find(|motor| motor.role == PropulsionRole::Tilt)
+            .map(|motor| motor.actual_tilt_rad)
+            .unwrap_or(0.0);
+        let vertical_propulsion = self
+            .inner
+            .vehicle
+            .motors
+            .iter()
+            .map(|motor| motor.max_thrust_n * motor.actual_output * (-motor.direction.z).max(0.0))
+            .sum::<f64>();
+        let forward_propulsion = self
+            .inner
+            .vehicle
+            .motors
+            .iter()
+            .map(|motor| motor.max_thrust_n * motor.actual_output * motor.direction.x.max(0.0))
+            .sum::<f64>();
+        let airspeed = self.inner.forces.air_velocity_ned.length();
+        let regime = if transition_actual < 0.2 && airspeed < 8.0 {
+            "HOVER"
+        } else if transition_actual > 0.8 && airspeed > 10.0 {
+            "CRUISE"
+        } else {
+            "TRANSITION"
+        };
+        serde_json::json!({
+            "time": self.inner.state.sim_time_s,
+            "vehicleClass": format!("{:?}", self.inner.vehicle.class),
+            "position": self.inner.state.position_ned_m.to_array(),
+            "velocity": self.inner.state.velocity_ned_mps.to_array(),
+            "attitude": self.inner.state.attitude_body_to_ned.to_array(),
+            "euler": [roll, pitch, yaw],
+            "rates": self.inner.state.angular_rate_body_rps.to_array(),
+            "airVelocity": self.inner.forces.air_velocity_ned.to_array(),
+            "angleOfAttack": self.inner.forces.angle_of_attack_rad,
+            "stalled": self.inner.forces.stalled,
+            "terrainHeight": terrain_height,
+            "transition": {"command": transition_command, "actual": transition_actual, "tiltAngle": tilt_angle, "regime": regime, "verticalThrust": vertical_propulsion, "forwardThrust": forward_propulsion},
+            "forces": {"gravity": self.inner.forces.gravity.to_array(), "thrust": self.inner.forces.thrust.to_array(), "lift": self.inner.forces.lift.to_array(), "drag": self.inner.forces.drag.to_array(), "motors": motors, "surfaces": surfaces},
+            "control": {"target": t.target_rate_rps.to_array(), "actual": t.actual_rate_rps.to_array(), "error": t.error_rps.to_array(), "output": t.output.to_array(), "throttle": self.inner.throttle(), "sticks": self.inner.control_sticks().to_array(), "motors": t.motors, "actualMotors": self.inner.vehicle.motors.iter().map(|motor| motor.actual_output).collect::<Vec<_>>()},
+            "battery": {"remainingMah": self.inner.battery_state.remaining_mah, "consumedWh": self.inner.battery_state.consumed_wh, "voltage": self.inner.battery_state.voltage_v, "current": self.inner.battery_state.current_a},
+            "mass": self.inner.vehicle.mass(),
+            "cg": self.inner.vehicle.center_of_mass().to_array(),
+            "inertia": self.inner.vehicle.inertia_kg_m2.to_array()
+        })
+        .to_string()
     }
 }
 impl Default for FlightSimulator {

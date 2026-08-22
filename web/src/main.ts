@@ -22,6 +22,13 @@ import {
   type AxisName,
   type ControlProfile,
 } from "./input";
+import {
+  createMapBackground,
+  createTerrain,
+  drawNavigationMap,
+  TERRAIN_SEED,
+  WORLD_SIZE_M,
+} from "./terrain";
 const DEG = 180 / Math.PI,
   DT = 0.004,
   AXES: AxisName[] = ["roll", "pitch", "yaw", "throttle"];
@@ -36,6 +43,12 @@ document
     "beforeend",
     '<dt>Battery</dt><dd id="battery">—</dd><dt>Remaining</dt><dd id="batteryRemaining">—</dd><dt>Input source</dt><dd id="inputReadout">Keyboard + Mouse</dd><dt id="aoaLabel" hidden>Angle of attack</dt><dd id="aoa" hidden>—</dd>',
   );
+document
+  .querySelector("aside section dl")!
+  .insertAdjacentHTML(
+    "beforeend",
+    '<dt id="vtolRegimeLabel" hidden>Flight regime</dt><dd id="vtolRegime" hidden>HOVER</dd><dt id="vtolForcesLabel" hidden>VTOL thrust</dt><dd id="vtolForces" hidden>—</dd>',
+  );
 buildNav.disabled = false;
 const flyView = document.querySelector<HTMLElement>("main")!;
 flyView.id = "flyView";
@@ -47,6 +60,7 @@ let activeBatteryCapacityMah = (
     battery: { capacityMah: number };
   }
 ).battery.capacityMah;
+let activeHoverThrottle = 0.31;
 const view = document.querySelector<HTMLElement>("#viewport")!,
   scene = new THREE.Scene();
 document.querySelector(".help")!.textContent =
@@ -59,9 +73,23 @@ view.insertAdjacentHTML(
   "beforeend",
   '<div id="stallWarning" class="stall-warning" hidden>STALL · AoA HIGH</div>',
 );
+view.insertAdjacentHTML(
+  "beforeend",
+  '<div id="navigation"><button id="mapToggle">MAP</button><canvas id="map" width="180" height="180"></canvas><strong id="heading">N 000°</strong><span id="home">HOME 0.00 km · 000°</span><small id="coordinates">N 0 · E 0</small></div>',
+);
+view.insertAdjacentHTML(
+  "beforeend",
+  '<label id="transitionControl" hidden>VTOL TRANSITION <output>0%</output><input id="transition" type="range" min="0" max="100" value="0"><small>G hover · T cruise</small></label>',
+);
+document
+  .querySelector(".toolbar")!
+  .insertAdjacentHTML(
+    "beforeend",
+    '<span>ENV</span><select id="environment"><option value="alpine">ALPINE RANGE</option><option value="test">TEST RANGE</option></select>',
+  );
 scene.background = new THREE.Color(0x8fb9cf);
-scene.fog = new THREE.Fog(0x8fb9cf, 35, 120);
-const camera = new THREE.PerspectiveCamera(62, 1, 0.05, 500),
+scene.fog = new THREE.Fog(0x8fb9cf, 900, 5_500);
+const camera = new THREE.PerspectiveCamera(62, 1, 0.05, 10_000),
   renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
@@ -69,36 +97,53 @@ view.prepend(renderer.domElement);
 const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.enabled = false;
 orbit.enableDamping = true;
-orbit.maxDistance = 40;
+orbit.maxDistance = 4_000;
 orbit.minDistance = 0.5;
 scene.add(new THREE.HemisphereLight(0xd9f2ff, 0x37502b, 2));
 const sun = new THREE.DirectionalLight(0xffffff, 2.4);
 sun.position.set(8, 16, 7);
 sun.castShadow = true;
 scene.add(sun);
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(180, 180),
-  new THREE.MeshStandardMaterial({ color: 0x567847 }),
-);
-ground.rotation.x = -Math.PI / 2;
-ground.receiveShadow = true;
-scene.add(ground);
+let alpineEnvironment = true;
+sim.set_environment(true, TERRAIN_SEED);
+let terrainGroup = createTerrain(sim, true);
+scene.add(terrainGroup);
 const runway = new THREE.Mesh(
-  new THREE.PlaneGeometry(8, 70),
+  new THREE.PlaneGeometry(18, 700),
   new THREE.MeshStandardMaterial({ color: 0x30363a }),
 );
 runway.rotation.x = -Math.PI / 2;
 runway.position.y = 0.012;
 scene.add(runway);
-for (let i = -30; i <= 30; i += 6) {
+for (let i = -300; i <= 300; i += 30) {
   const line = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.18, 3),
+    new THREE.PlaneGeometry(0.35, 12),
     new THREE.MeshBasicMaterial({ color: 0xffffff }),
   );
   line.rotation.x = -Math.PI / 2;
   line.position.set(0, 0.025, i);
   scene.add(line);
 }
+const mapCanvas = document.querySelector<HTMLCanvasElement>("#map")!;
+let mapBackground = createMapBackground(mapCanvas, sim);
+document.querySelector("#mapToggle")!.addEventListener("click", () => {
+  mapCanvas.hidden = !mapCanvas.hidden;
+});
+document.querySelector<HTMLSelectElement>("#environment")!.onchange = (
+  event,
+) => {
+  alpineEnvironment = (event.target as HTMLSelectElement).value === "alpine";
+  sim.set_environment(alpineEnvironment, TERRAIN_SEED);
+  view.dataset.environment = alpineEnvironment ? "alpine" : "test";
+  scene.remove(terrainGroup);
+  terrainGroup.traverse((object) => {
+    if (object instanceof THREE.Mesh) object.geometry.dispose();
+  });
+  terrainGroup = createTerrain(sim, alpineEnvironment);
+  scene.add(terrainGroup);
+  mapBackground = createMapBackground(mapCanvas, sim);
+  reset();
+};
 const craft = new THREE.Group(),
   body = new THREE.Mesh(
     new THREE.BoxGeometry(0.38, 0.13, 0.28),
@@ -230,7 +275,7 @@ const thrustArrow = new THREE.ArrowHelper(
     0xc28cff,
   );
 const motorArrows = Array.from(
-  { length: 4 },
+  { length: 8 },
   () =>
     new THREE.ArrowHelper(
       new THREE.Vector3(0, 1, 0),
@@ -283,6 +328,12 @@ const inputSourceSelect =
     document.querySelector<HTMLInputElement>("#mouseSensitivity")!,
   mouseReturn = document.querySelector<HTMLInputElement>("#mouseReturn")!,
   stickDot = document.querySelector<HTMLElement>("#virtualStick i")!;
+const transitionInput =
+  document.querySelector<HTMLInputElement>("#transition")!;
+let transitionCommand = 0;
+transitionInput.oninput = () => {
+  transitionCommand = Number(transitionInput.value) / 100;
+};
 inputSourceSelect.onchange = () => {
   inputSource = inputSourceSelect.value as typeof inputSource;
   virtualStick = { roll: 0, pitch: 0 };
@@ -433,7 +484,10 @@ function reset() {
   collective =
     (JSON.parse(sim.state_json()) as SimState).vehicleClass === "FixedWing"
       ? 0
-      : 0.31;
+      : activeHoverThrottle;
+  transitionCommand = 0;
+  transitionInput.value = "0";
+  sim.set_transition(0);
   accumulator = 0;
   history.length = 0;
 }
@@ -444,8 +498,16 @@ const workshop = setupWorkshop(root, sim, (definition) => {
   buildNav.classList.remove("active");
   activeBatteryCapacityMah = definition.battery.capacityMah;
   const fixedWing = definition.vehicleClass === "fixedWing";
-  fixedWingVisual.visible = fixedWing;
-  quadVisuals.forEach((object) => (object.visible = !fixedWing));
+  const vtol =
+    definition.vehicleClass === "quadPlane" ||
+    definition.vehicleClass === "tiltrotor";
+  const winged = fixedWing || vtol;
+  fixedWingVisual.visible = winged;
+  quadVisuals.forEach(
+    (object, index) => (object.visible = !winged || (vtol && index > 0)),
+  );
+  trainerPropeller.visible = definition.vehicleClass !== "tiltrotor";
+  document.querySelector<HTMLElement>("#transitionControl")!.hidden = !vtol;
   body.scale.set(
     definition.frame.bodyDimensionsM[1] / 0.38,
     definition.frame.bodyDimensionsM[2] / 0.13,
@@ -459,20 +521,27 @@ const workshop = setupWorkshop(root, sim, (definition) => {
     hoverThrottle: number;
     estimatedStallSpeedMps: number;
   };
+  activeHoverThrottle = Math.min(1, engineering.hoverThrottle);
   reset();
-  collective = fixedWing ? 0 : Math.min(1, engineering.hoverThrottle);
+  collective = fixedWing ? 0 : activeHoverThrottle;
   document.querySelector("#modeReadout")!.textContent = fixedWing
-    ? "MANUAL"
-    : mode;
+    ? "TRAINER MANUAL"
+    : vtol
+      ? "HOVER"
+      : mode;
+  document.querySelector<HTMLButtonElement>(
+    "[data-profile='BEGINNER']",
+  )!.textContent = fixedWing ? "TRAINER" : "BEGINNER";
+  mouseSensitivity.value = fixedWing ? "0.0015" : "0.0025";
   document
     .querySelectorAll<HTMLButtonElement>("[data-mode]")
     .forEach((button) => (button.disabled = fixedWing));
-  document.querySelector<HTMLInputElement>("#chaseDistance")!.value = fixedWing
+  document.querySelector<HTMLInputElement>("#chaseDistance")!.value = winged
     ? "3.4"
     : "2.4";
   document.querySelector(".range-label small")!.textContent = fixedWing
     ? "Forward propulsion · W/S persists"
-    : "Estimated hover 31%";
+    : `Estimated hover ${(engineering.hoverThrottle * 100).toFixed(0)}%`;
   throttle.value = String(Math.round(collective * 100));
   throttleOut.value = `${Math.round(collective * 100)}%`;
   view.dataset.vehicleDefinition = sim.vehicle_definition_json();
@@ -682,12 +751,22 @@ function updateInput(dt: number) {
   for (const axis of ["roll", "pitch", "yaw"] as const)
     commands[axis] = slew(
       commands[axis],
-      shape(targets[axis], 0, profile.expo),
+      shape(
+        targets[axis] * (state.vehicleClass === "FixedWing" ? 0.7 : 1),
+        0,
+        profile.expo,
+      ),
       profile.attack,
       profile.release,
       dt,
     );
   sim.set_control(commands.roll, commands.pitch, commands.yaw, collective);
+  if (keys.has("KeyT"))
+    transitionCommand = Math.min(1, transitionCommand + dt * 0.2);
+  if (keys.has("KeyG"))
+    transitionCommand = Math.max(0, transitionCommand - dt * 0.25);
+  transitionInput.value = String(Math.round(transitionCommand * 100));
+  sim.set_transition(transitionCommand);
 }
 function resize() {
   const w = view.clientWidth,
@@ -721,14 +800,20 @@ function updateCamera() {
     orbit.target.lerp(craft.position, 0.03);
     orbit.update();
   }
+  const cameraTerrain = sim.terrain_height(
+    -camera.position.z,
+    camera.position.x,
+  );
+  camera.position.y = Math.max(camera.position.y, cameraTerrain + 1.5);
 }
+let lastMapUpdate = 0;
 function updateHud() {
   const speed = Math.hypot(...state.velocity),
     angles = state.euler.map((v) => v * DEG);
   throttle.value = String(Math.round(collective * 100));
   throttleOut.value = `${throttle.value}%`;
   document.querySelector("#alt")!.textContent =
-    `${(-state.position[2]).toFixed(1)} m`;
+    `${(-state.position[2] - state.terrainHeight).toFixed(1)} m AGL`;
   document.querySelector("#speed")!.textContent = `${speed.toFixed(1)} m/s`;
   document.querySelector("#airspeed")!.textContent = `${speed.toFixed(1)} m/s`;
   const airspeed = Math.hypot(...state.airVelocity);
@@ -743,25 +828,67 @@ function updateHud() {
   document.querySelector("#inputReadout")!.textContent =
     inputSource === "gamepad" ? "Gamepad" : "Keyboard + Mouse";
   const fixedWing = state.vehicleClass === "FixedWing";
-  (document.querySelector("#aoaLabel") as HTMLElement).hidden = !fixedWing;
-  (document.querySelector("#aoa") as HTMLElement).hidden = !fixedWing;
+  const vtol =
+    state.vehicleClass === "QuadPlane" || state.vehicleClass === "Tiltrotor";
+  const winged = fixedWing || vtol;
+  (document.querySelector("#aoaLabel") as HTMLElement).hidden = !winged;
+  (document.querySelector("#aoa") as HTMLElement).hidden = !winged;
   document.querySelector("#aoa")!.textContent =
     `${(state.angleOfAttack * DEG).toFixed(1)}°`;
   (document.querySelector("#stallWarning") as HTMLElement).hidden = !(
-    fixedWing && state.stalled
+    winged && state.stalled
   );
+  for (const id of [
+    "vtolRegimeLabel",
+    "vtolRegime",
+    "vtolForcesLabel",
+    "vtolForces",
+  ])
+    (document.querySelector(`#${id}`) as HTMLElement).hidden = !vtol;
+  document.querySelector("#vtolRegime")!.textContent = vtol
+    ? `${state.transition.regime} · ${(state.transition.actual * 100).toFixed(0)}% · tilt ${(state.transition.tiltAngle * DEG).toFixed(0)}°`
+    : "—";
+  document.querySelector("#vtolForces")!.textContent = vtol
+    ? `vertical ${state.transition.verticalThrust.toFixed(1)} N · forward ${state.transition.forwardThrust.toFixed(1)} N`
+    : "—";
+  document.querySelector("#transitionControl output")!.textContent =
+    `${Math.round(state.transition.actual * 100)}%`;
+  if (vtol)
+    document.querySelector("#modeReadout")!.textContent =
+      state.transition.regime;
   document.querySelector("#angles")!.textContent = angles
     .map((v) => `${v.toFixed(0)}°`)
     .join(" / ");
   document.querySelector("#attitudeText")!.textContent =
     `R ${angles[0].toFixed(0)}° · P ${angles[1].toFixed(0)}°`;
+  const headingDegrees = ((angles[2] % 360) + 360) % 360;
+  const cardinal = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][
+    Math.round(headingDegrees / 45) % 8
+  ];
+  document.querySelector("#heading")!.textContent =
+    `${cardinal} ${headingDegrees.toFixed(0).padStart(3, "0")}°`;
+  const homeDistance = Math.hypot(state.position[0], state.position[1]);
+  const homeBearing =
+    (((Math.atan2(-state.position[1], -state.position[0]) * DEG) % 360) + 360) %
+    360;
+  document.querySelector("#home")!.textContent =
+    `HOME ${(homeDistance / 1000).toFixed(2)} km · ${homeBearing.toFixed(0).padStart(3, "0")}°`;
+  document.querySelector("#coordinates")!.textContent =
+    `N ${state.position[0].toFixed(0)} · E ${state.position[1].toFixed(0)}`;
+  if (performance.now() - lastMapUpdate > 100) {
+    drawNavigationMap(mapCanvas, mapBackground, state.position, state.euler[2]);
+    lastMapUpdate = performance.now();
+  }
   document.querySelector<HTMLElement>("#horizon")!.style.transform =
     `translateY(${Math.max(-24, Math.min(24, angles[1]))}px) rotate(${-angles[0]}deg)`;
+  const fixedSurfaces = ["Left Wing", "Elevator", "Rudder"].map((name) =>
+    state.forces.surfaces.find((surface) => surface.name === name),
+  );
   document.querySelector("#axisTelemetry")!.innerHTML =
     ["Roll", "Pitch", "Yaw"]
       .map(
         (n, i) =>
-          `<div><strong>${n}</strong><span>T ${Math.round(state.control.target[i] * DEG)}°/s</span><span>A ${Math.round(state.control.actual[i] * DEG)}°/s</span><span>E ${Math.round(state.control.error[i] * DEG)}°/s</span><span>O ${state.control.output[i].toFixed(3)}</span></div>`,
+          `<div><strong>${n}</strong><span>${fixedWing ? `Rate ${(state.rates[i] * DEG).toFixed(0)}°/s` : `T ${Math.round(state.control.target[i] * DEG)}°/s`}</span><span>${fixedWing ? `Cmd ${((fixedSurfaces[i]?.commandedDeflection ?? 0) * DEG).toFixed(0)}°` : `A ${Math.round(state.control.actual[i] * DEG)}°/s`}</span><span>${fixedWing ? `Act ${((fixedSurfaces[i]?.actualDeflection ?? 0) * DEG).toFixed(0)}°` : `E ${Math.round(state.control.error[i] * DEG)}°/s`}</span><span>${fixedWing ? `Stick ${state.control.sticks[i].toFixed(2)}` : `O ${state.control.output[i].toFixed(3)}`}</span></div>`,
       )
       .join("") +
     `<div class="motors"><strong>Motors</strong>${state.control.motors.map((v, i) => `<span>M${i + 1} ${Math.round(v * 100)}%</span>`).join("")}</div>`;
@@ -775,10 +902,11 @@ function updateHud() {
   });
   if (history.length > 240) history.shift();
   drawGraph();
-  document.querySelector("#status")!.textContent =
-    state.vehicleClass === "FixedWing"
-      ? `Simulation running locally · ${state.time.toFixed(1)} s · AoA ${(state.angleOfAttack * DEG).toFixed(1)}°${state.stalled ? " · STALL" : ""}`
-      : `Simulation running locally · ${state.time.toFixed(1)} s · hover ${(metrics(state.mass).hoverThrottle * 100).toFixed(0)}%`;
+  const boundsWarning =
+    homeDistance > WORLD_SIZE_M * 0.43 ? " · RETURN TOWARD HOME" : "";
+  document.querySelector("#status")!.textContent = winged
+    ? `Simulation running locally · ${state.time.toFixed(1)} s · AoA ${(state.angleOfAttack * DEG).toFixed(1)}°${state.stalled ? " · STALL" : ""}${boundsWarning}`
+    : `Simulation running locally · ${state.time.toFixed(1)} s · hover ${(metrics(state.mass).hoverThrottle * 100).toFixed(0)}%${boundsWarning}`;
 }
 function frame(now: number) {
   const elapsed = Math.min((now - last) / 1000, 0.05);
@@ -791,6 +919,9 @@ function frame(now: number) {
     accumulator -= DT;
   }
   state = JSON.parse(sim.state_json()) as SimState;
+  view.dataset.terrainHeight = String(state.terrainHeight);
+  view.dataset.environment = alpineEnvironment ? "alpine" : "test";
+  view.dataset.rates = state.rates.join(",");
   nedPositionToThree(state.position, craft.position);
   attitudeBodyToNedToThree(state.attitude, craft.quaternion);
   const setArrow = (
@@ -846,11 +977,21 @@ function frame(now: number) {
     if (force.lengthSq() > 1e-12) arrow.setDirection(force.normalize());
     arrow.setLength(Math.max(0.01, force.length() / 8));
   });
-  if (state.vehicleClass === "FixedWing") {
-    leftAileron.rotation.x = state.control.sticks[0] * 0.28;
-    rightAileron.rotation.x = -state.control.sticks[0] * 0.28;
-    horizontalTail.rotation.x = state.control.sticks[1] * 0.28;
-    verticalTail.rotation.y = -state.control.sticks[2] * 0.28;
+  if (state.vehicleClass !== "Multicopter") {
+    const deflection = (name: string) =>
+      state.forces.surfaces.find((surface) => surface.name === name)
+        ?.actualDeflection ?? 0;
+    leftAileron.rotation.x = -deflection("Left Wing");
+    rightAileron.rotation.x = -deflection("Right Wing");
+    horizontalTail.rotation.x = -deflection("Elevator");
+    verticalTail.rotation.y = deflection("Rudder");
+  }
+  if (state.vehicleClass === "Tiltrotor") {
+    flightMotorVisuals.forEach(
+      (rotor) => (rotor.rotation.x = state.transition.tiltAngle),
+    );
+  } else {
+    flightMotorVisuals.forEach((rotor) => (rotor.rotation.x = 0));
   }
   const vectors = document.querySelector<HTMLInputElement>("#vectors")!.checked;
   thrustArrow.visible = vectors;

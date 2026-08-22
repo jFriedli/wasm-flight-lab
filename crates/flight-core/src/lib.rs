@@ -5,8 +5,10 @@ use glam::{DQuat, DVec3};
 use serde::{Deserialize, Serialize};
 
 pub mod control;
+pub mod terrain;
 pub mod vehicle;
 use control::FlightController;
+use terrain::TerrainDefinition;
 use vehicle::{BatteryDefinition, VehicleDefinition};
 
 pub const GRAVITY: f64 = 9.806_65;
@@ -25,12 +27,26 @@ pub struct Motor {
     pub spin_down_time_s: f64,
     pub max_power_w: f64,
     pub effectiveness: f64,
+    pub role: PropulsionRole,
+    pub hover_direction: DVec3,
+    pub actual_tilt_rad: f64,
+    pub max_tilt_rad: f64,
+    pub tilt_rate_rad_s: f64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PropulsionRole {
+    Lift,
+    Forward,
+    Tilt,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VehicleClass {
     Multicopter,
     FixedWing,
+    QuadPlane,
+    Tiltrotor,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum SurfacePlane {
@@ -61,6 +77,10 @@ pub struct AeroSurface {
     pub control_sign: f64,
     pub max_deflection_rad: f64,
     pub control_effectiveness: f64,
+    pub trim_deflection_rad: f64,
+    pub servo_rate_rad_s: f64,
+    pub commanded_deflection_rad: f64,
+    pub actual_deflection_rad: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,6 +147,7 @@ pub struct Environment {
     pub density_kg_m3: f64,
     pub wind_ned_mps: DVec3,
     pub gravity_mps2: f64,
+    pub terrain: TerrainDefinition,
 }
 impl Default for Environment {
     fn default() -> Self {
@@ -134,6 +155,7 @@ impl Default for Environment {
             density_kg_m3: SEA_LEVEL_DENSITY,
             wind_ned_mps: DVec3::ZERO,
             gravity_mps2: GRAVITY,
+            terrain: TerrainDefinition::default(),
         }
     }
 }
@@ -162,13 +184,25 @@ pub struct SurfaceForce {
     pub cl: f64,
     pub cd: f64,
     pub stalled: bool,
+    pub commanded_deflection_rad: f64,
+    pub actual_deflection_rad: f64,
+}
+
+/// Velocity of a point fixed to the rigid body, relative to the air and
+/// expressed in body axes. The offset is measured from the current CG.
+pub fn local_air_velocity_body(
+    cg_air_velocity_body: DVec3,
+    angular_rate_body: DVec3,
+    offset_body: DVec3,
+) -> DVec3 {
+    cg_air_velocity_body + angular_rate_body.cross(offset_body)
 }
 
 pub fn aerodynamic_force(
     surface: &AeroSurface,
     air_body: DVec3,
     density: f64,
-    control: f64,
+    deflection_rad: f64,
 ) -> (DVec3, DVec3, f64, f64, f64, bool) {
     let planar_speed = match surface.plane {
         SurfacePlane::Horizontal => DVec3::new(air_body.x, 0.0, air_body.z).length(),
@@ -181,11 +215,9 @@ pub fn aerodynamic_force(
         SurfacePlane::Horizontal => air_body.z.atan2(air_body.x),
         SurfacePlane::Vertical => air_body.y.atan2(air_body.x),
     };
-    let deflection = control.clamp(-1.0, 1.0)
-        * surface.control_sign
-        * surface.max_deflection_rad
+    let effective_deflection = deflection_rad.clamp(-surface.max_deflection_rad, surface.max_deflection_rad)
         * surface.control_effectiveness;
-    let alpha = flow_angle + surface.incidence_rad + deflection;
+    let alpha = flow_angle + surface.incidence_rad + effective_deflection;
     let critical = surface.stall_angle_rad.max(0.01);
     let linear_cl = surface.lift_slope * alpha;
     let stalled = alpha.abs() > critical;
@@ -290,6 +322,8 @@ pub struct Simulator {
     pub battery_state: BatteryState,
     control_sticks: DVec3,
     throttle: f64,
+    transition_command: f64,
+    transition_actual: f64,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct BatteryState {
@@ -315,6 +349,8 @@ impl Simulator {
             battery_state,
             control_sticks: DVec3::ZERO,
             throttle: 0.0,
+            transition_command: 0.0,
+            transition_actual: 0.0,
         }
     }
     pub fn set_control(&mut self, sticks: DVec3, throttle: f64) {
@@ -335,14 +371,73 @@ impl Simulator {
     pub fn throttle(&self) -> f64 {
         self.throttle
     }
+    pub fn set_transition(&mut self, transition: f64) {
+        self.transition_command = if transition.is_finite() {
+            transition.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+    pub fn transition(&self) -> (f64, f64) {
+        (self.transition_command, self.transition_actual)
+    }
     pub fn step(&mut self, dt: f64) {
         let dt = dt.clamp(0.0001, 0.02);
-        let commands = if self.vehicle.class == VehicleClass::Multicopter {
-            self.controller
-                .update(self.control_sticks, self.throttle, &self.state, dt)
-                .to_vec()
+        let transition_rate = if self.vehicle.class == VehicleClass::Tiltrotor {
+            self.vehicle
+                .motors
+                .iter()
+                .filter(|motor| motor.role == PropulsionRole::Tilt)
+                .map(|motor| motor.tilt_rate_rad_s / motor.max_tilt_rad.max(0.01))
+                .fold(f64::INFINITY, f64::min)
+                .min(0.5)
         } else {
-            vec![self.throttle; self.vehicle.motors.len()]
+            0.22
+        };
+        self.transition_actual += (self.transition_command - self.transition_actual)
+            .clamp(-transition_rate * dt, transition_rate * dt);
+        for motor in &mut self.vehicle.motors {
+            if motor.role == PropulsionRole::Tilt {
+                motor.actual_tilt_rad = self.transition_actual * motor.max_tilt_rad;
+                motor.direction = DVec3::new(motor.actual_tilt_rad.sin(), 0.0, -motor.actual_tilt_rad.cos());
+            }
+        }
+        let commands = match self.vehicle.class {
+            VehicleClass::Multicopter => self
+                .controller
+                .update(self.control_sticks, self.throttle, &self.state, dt)
+                .to_vec(),
+            VehicleClass::FixedWing => vec![self.throttle; self.vehicle.motors.len()],
+            VehicleClass::QuadPlane => {
+                let airspeed_support = ((self.forces.air_velocity_ned.length() - 5.0) / 10.0).clamp(0.0, 1.0);
+                let lift_collective =
+                    self.throttle * (1.0 - 0.85 * self.transition_actual * airspeed_support);
+                let lift = self
+                    .controller
+                    .update(self.control_sticks, lift_collective, &self.state, dt);
+                let mut lift_index = 0;
+                self.vehicle
+                    .motors
+                    .iter()
+                    .map(|motor| match motor.role {
+                        PropulsionRole::Forward => self.throttle * self.transition_actual,
+                        _ => {
+                            let command = lift.get(lift_index).copied().unwrap_or(lift_collective);
+                            lift_index += 1;
+                            command
+                        }
+                    })
+                    .collect()
+            }
+            VehicleClass::Tiltrotor => {
+                let mixed = self
+                    .controller
+                    .update(self.control_sticks, self.throttle, &self.state, dt);
+                mixed
+                    .into_iter()
+                    .map(|command| self.throttle + (command - self.throttle) * (1.0 - self.transition_actual))
+                    .collect()
+            }
         };
         for (motor, command) in self.vehicle.motors.iter_mut().zip(commands) {
             motor.command = command;
@@ -393,18 +488,31 @@ impl Simulator {
         let air_ned = self.state.velocity_ned_mps - self.environment.wind_ned_mps;
         f.air_velocity_ned = air_ned;
         let air_body = q.conjugate() * air_ned;
-        for surface in &self.vehicle.aero_surfaces {
+        for surface in &mut self.vehicle.aero_surfaces {
             let control = match surface.control_axis {
                 ControlAxis::None => 0.0,
                 ControlAxis::Roll => self.control_sticks.x,
                 ControlAxis::Pitch => self.control_sticks.y,
                 ControlAxis::Yaw => self.control_sticks.z,
             };
-            let local_air_body = (air_body
-                + self.state.angular_rate_body_rps.cross(surface.position - com) * 0.1)
-                .clamp_length_max(150.0);
-            let (lift_body, drag_body, angle, cl, cd, stalled) =
-                aerodynamic_force(surface, local_air_body, self.environment.density_kg_m3, control);
+            surface.commanded_deflection_rad = surface.trim_deflection_rad
+                + control.clamp(-1.0, 1.0) * surface.control_sign * surface.max_deflection_rad;
+            surface.commanded_deflection_rad = surface
+                .commanded_deflection_rad
+                .clamp(-surface.max_deflection_rad, surface.max_deflection_rad);
+            let max_servo_step = surface.servo_rate_rad_s * dt;
+            surface.actual_deflection_rad += (surface.commanded_deflection_rad
+                - surface.actual_deflection_rad)
+                .clamp(-max_servo_step, max_servo_step);
+            let local_air_body =
+                local_air_velocity_body(air_body, self.state.angular_rate_body_rps, surface.position - com)
+                    .clamp_length_max(150.0);
+            let (lift_body, drag_body, angle, cl, cd, stalled) = aerodynamic_force(
+                surface,
+                local_air_body,
+                self.environment.density_kg_m3,
+                surface.actual_deflection_rad,
+            );
             let lift_ned = q * lift_body;
             let drag_ned = q * drag_body;
             f.lift += lift_ned;
@@ -423,18 +531,16 @@ impl Simulator {
                 cl,
                 cd,
                 stalled,
+                commanded_deflection_rad: surface.commanded_deflection_rad,
+                actual_deflection_rad: surface.actual_deflection_rad,
             });
         }
-        let body_drag_coefficient = if self.vehicle.class == VehicleClass::FixedWing {
-            0.012
-        } else {
+        let body_drag_coefficient = if self.vehicle.class == VehicleClass::Multicopter {
             0.08
+        } else {
+            0.012
         };
         f.drag += -air_ned * air_ned.length() * body_drag_coefficient * self.environment.density_kg_m3;
-        if self.vehicle.class == VehicleClass::FixedWing {
-            f.torque_body -=
-                self.state.angular_rate_body_rps * DVec3::new(0.018, 0.028, 0.022) * air_body.length();
-        }
         let accel = (f.gravity + f.thrust + f.lift + f.drag) / mass;
         self.state.velocity_ned_mps += accel * dt;
         self.state.position_ned_m += self.state.velocity_ned_mps * dt;
@@ -444,10 +550,19 @@ impl Simulator {
         self.state.velocity_ned_mps = self.state.velocity_ned_mps.clamp_length_max(250.0);
         let dq = DQuat::from_scaled_axis(self.state.angular_rate_body_rps * dt);
         self.state.attitude_body_to_ned = (self.state.attitude_body_to_ned * dq).normalize();
-        if self.state.position_ned_m.z > 0.0 {
-            self.state.position_ned_m.z = 0.0;
-            if self.state.velocity_ned_mps.z > 0.0 {
-                self.state.velocity_ned_mps.z *= -0.15;
+        let ground_down = self
+            .environment
+            .terrain
+            .ground_down_m(self.state.position_ned_m.x, self.state.position_ned_m.y);
+        if self.state.position_ned_m.z > ground_down {
+            self.state.position_ned_m.z = ground_down;
+            let normal = self
+                .environment
+                .terrain
+                .normal_up_ned(self.state.position_ned_m.x, self.state.position_ned_m.y);
+            let normal_speed = self.state.velocity_ned_mps.dot(normal);
+            if normal_speed < 0.0 {
+                self.state.velocity_ned_mps -= normal * normal_speed * 1.15;
             }
             let ground_damping = if self.vehicle.class == VehicleClass::FixedWing {
                 0.9995
@@ -456,7 +571,7 @@ impl Simulator {
             };
             self.state.velocity_ned_mps.x *= ground_damping;
             self.state.velocity_ned_mps.y *= ground_damping;
-            if self.vehicle.class == VehicleClass::FixedWing {
+            if self.vehicle.class == VehicleClass::FixedWing && normal.z < -0.98 {
                 let (_, pitch, _) = self.state.attitude_body_to_ned.to_euler(glam::EulerRot::ZYX);
                 self.state.attitude_body_to_ned = DQuat::from_rotation_y(pitch.clamp(-0.08, 0.22));
                 self.state.angular_rate_body_rps.x = 0.0;
@@ -498,6 +613,19 @@ mod tests {
         let mut s = Simulator::new(v);
         s.step(0.01);
         assert!(s.state.velocity_ned_mps.z > 0.09);
+    }
+    #[test]
+    fn aircraft_collides_with_authoritative_mountain_height() {
+        let mut sim = Simulator::new(beginner_quad());
+        let north = 1_850.0;
+        let east = 1_650.0;
+        let ground = sim.environment.terrain.ground_down_m(north, east);
+        assert!(ground < -500.0);
+        sim.state.position_ned_m = DVec3::new(north, east, ground + 10.0);
+        sim.state.velocity_ned_mps = DVec3::new(0.0, 0.0, 5.0);
+        sim.step(0.004);
+        assert!((sim.state.position_ned_m.z - ground).abs() < 1e-9);
+        assert!(sim.state.velocity_ned_mps.is_finite());
     }
     #[test]
     fn symmetric_quad_has_near_zero_torque() {
@@ -710,6 +838,16 @@ mod tests {
         sim.state.position_ned_m.z = -20.0;
         sim.state.velocity_ned_mps.x = speed;
         sim.set_control(sticks, 0.0);
+        for surface in &mut sim.vehicle.aero_surfaces {
+            let input = match surface.control_axis {
+                ControlAxis::None => 0.0,
+                ControlAxis::Roll => sticks.x,
+                ControlAxis::Pitch => sticks.y,
+                ControlAxis::Yaw => sticks.z,
+            };
+            surface.actual_deflection_rad =
+                surface.trim_deflection_rad + input * surface.control_sign * surface.max_deflection_rad;
+        }
         sim.step(0.004);
         sim.forces.torque_body
     }
@@ -722,11 +860,120 @@ mod tests {
     #[test]
     fn off_cg_surface_force_creates_the_expected_moment() {
         let surface = trainer_surface("Elevator");
-        let (lift, drag, ..) =
-            aerodynamic_force(&surface, DVec3::new(18.0, 0.0, 1.0), SEA_LEVEL_DENSITY, 0.4);
+        let (lift, drag, ..) = aerodynamic_force(
+            &surface,
+            DVec3::new(18.0, 0.0, 1.0),
+            SEA_LEVEL_DENSITY,
+            -surface.max_deflection_rad,
+        );
         let moment = surface.position.cross(lift + drag);
         assert!(moment.y > 0.0);
         assert!(moment.x.abs() < 1e-9 && moment.z.abs() < 1e-9);
+    }
+    #[test]
+    fn local_surface_velocity_includes_full_rigid_body_rotation() {
+        let cg_air = DVec3::new(20.0, 1.0, -0.5);
+        let omega = DVec3::new(0.2, -0.3, 0.4);
+        let offset = DVec3::new(-0.6, 0.7, 0.1);
+        assert_eq!(
+            local_air_velocity_body(cg_air, omega, offset),
+            cg_air + omega.cross(offset)
+        );
+    }
+    fn trainer_rate_moment(rate: DVec3, speed: f64) -> DVec3 {
+        let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -20.0;
+        sim.state.velocity_ned_mps.x = speed;
+        sim.state.angular_rate_body_rps = rate;
+        sim.step(0.004);
+        sim.forces.torque_body
+    }
+    #[test]
+    fn trainer_surfaces_damp_roll_pitch_and_yaw_rates() {
+        for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+            let rate = axis * 0.5;
+            let moment = trainer_rate_moment(rate, 16.0);
+            assert!(
+                moment.dot(rate) < 0.0,
+                "rate {rate:?} was not opposed by moment {moment:?}"
+            );
+        }
+    }
+    #[test]
+    fn trainer_servo_is_rate_limited() {
+        let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -20.0;
+        sim.state.velocity_ned_mps.x = 16.0;
+        sim.set_control(DVec3::Y, 0.0);
+        sim.step(0.004);
+        let elevator = sim
+            .vehicle
+            .aero_surfaces
+            .iter()
+            .find(|surface| surface.name == "Elevator")
+            .unwrap();
+        assert!(elevator.actual_deflection_rad.abs() < elevator.commanded_deflection_rad.abs());
+        assert!(
+            (elevator.actual_deflection_rad - elevator.trim_deflection_rad).abs()
+                <= elevator.servo_rate_rad_s * 0.004 + 1e-12
+        );
+    }
+    #[test]
+    fn trainer_trim_has_small_angular_acceleration() {
+        let vehicle = VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap();
+        let inertia = vehicle.inertia_kg_m2;
+        let moment = trainer_moment(DVec3::ZERO, 16.0);
+        let angular_acceleration = moment / inertia;
+        assert!(
+            angular_acceleration.length() < 0.8,
+            "trim acceleration {angular_acceleration:?} from moment {moment:?}"
+        );
+    }
+    #[test]
+    fn moderate_trainer_inputs_do_not_create_pathological_rates() {
+        for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+            let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+            sim.state.position_ned_m.z = -100.0;
+            sim.state.velocity_ned_mps.x = 16.0;
+            let mut peak_rate: f64 = 0.0;
+            for _ in 0..125 {
+                sim.set_control(axis * 0.25, 0.45);
+                sim.step(0.004);
+                peak_rate = peak_rate.max(sim.state.angular_rate_body_rps.length());
+            }
+            for _ in 0..375 {
+                sim.set_control(DVec3::ZERO, 0.45);
+                sim.step(0.004);
+                peak_rate = peak_rate.max(sim.state.angular_rate_body_rps.length());
+            }
+            assert!(peak_rate < 2.5, "axis {axis:?} reached {peak_rate} rad/s");
+            assert!(sim.state.angular_rate_body_rps.length() < 0.8);
+        }
+    }
+    #[test]
+    fn trainer_remains_finite_during_gentle_thirty_second_cruise() {
+        let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -1_000.0;
+        sim.state.velocity_ned_mps.x = 16.0;
+        let mut peak_rate: f64 = 0.0;
+        for step in 0..7_500 {
+            let phase = step % 2_500;
+            let sticks = if phase < 250 {
+                DVec3::new(0.12, 0.0, 0.0)
+            } else if (800..1_050).contains(&phase) {
+                DVec3::new(-0.12, 0.0, 0.0)
+            } else if (1_500..1_700).contains(&phase) {
+                DVec3::new(0.0, 0.07, 0.05)
+            } else {
+                DVec3::ZERO
+            };
+            sim.set_control(sticks, 0.42);
+            sim.step(0.004);
+            peak_rate = peak_rate.max(sim.state.angular_rate_body_rps.length());
+        }
+        assert!(sim.state.position_ned_m.is_finite());
+        assert!(sim.state.attitude_body_to_ned.is_finite());
+        assert!(peak_rate < 2.5, "peak cruise rate {peak_rate} rad/s");
     }
     #[test]
     fn surface_authority_grows_with_airspeed() {
@@ -770,5 +1017,126 @@ mod tests {
             sim.step(0.004);
         }
         assert!(sim.state.position_ned_m.is_finite() && sim.state.attitude_body_to_ned.is_finite());
+    }
+    #[test]
+    fn quadplane_lift_motors_can_support_hover_weight() {
+        let definition = VehicleDefinition::quadplane();
+        let metrics = definition.metrics().unwrap();
+        assert!(metrics.hover_throttle < 0.75);
+        let mut sim = Simulator::new(definition.to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -20.0;
+        sim.set_control(DVec3::ZERO, metrics.hover_throttle);
+        for _ in 0..750 {
+            sim.step(0.004);
+        }
+        assert!(
+            (-sim.state.position_ned_m.z - 20.0).abs() < 5.0,
+            "hover altitude {}",
+            -sim.state.position_ned_m.z
+        );
+        assert!(sim.forces.lift.length() < sim.forces.thrust.length() * 0.1);
+    }
+    #[test]
+    fn quadplane_wing_carries_weight_at_cruise_speed() {
+        let mut sim = Simulator::new(VehicleDefinition::quadplane().to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -100.0;
+        sim.state.velocity_ned_mps = DVec3::new(17.0, 0.0, 0.8);
+        sim.transition_command = 1.0;
+        sim.transition_actual = 1.0;
+        sim.set_control(DVec3::ZERO, 0.5);
+        sim.step(0.004);
+        assert!(sim.forces.lift.z < -sim.vehicle.mass() * GRAVITY * 0.5);
+        assert!(sim.forces.thrust.x > 0.0);
+    }
+    #[test]
+    fn tiltrotor_force_direction_is_continuous_and_actuator_is_rate_limited() {
+        let run = |transition: f64| {
+            let mut sim = Simulator::new(VehicleDefinition::tiltrotor().to_vehicle().unwrap());
+            sim.state.position_ned_m.z = -20.0;
+            sim.transition_command = transition;
+            sim.transition_actual = transition;
+            sim.set_control(DVec3::ZERO, 0.6);
+            for motor in &mut sim.vehicle.motors {
+                motor.actual_output = 0.6;
+            }
+            sim.step(0.004);
+            sim.forces.thrust
+        };
+        let hover = run(0.0);
+        let halfway = run(0.5);
+        let cruise = run(1.0);
+        assert!(hover.z < -1.0 && hover.x.abs() < 1e-6);
+        assert!(halfway.x > 1.0 && halfway.z < -1.0);
+        assert!(cruise.x > 1.0 && cruise.z.abs() < 0.1);
+        let expected = hover.length() / 2.0_f64.sqrt();
+        assert!((halfway.x - expected).abs() < 0.1 && (halfway.z + expected).abs() < 0.1);
+
+        let mut actuator = Simulator::new(VehicleDefinition::tiltrotor().to_vehicle().unwrap());
+        actuator.set_transition(1.0);
+        actuator.step(0.004);
+        assert!(actuator.transition_actual > 0.0 && actuator.transition_actual <= 0.0021);
+    }
+    #[test]
+    fn vtol_forces_remain_continuous_around_mid_transition() {
+        let force = |transition: f64| {
+            let mut sim = Simulator::new(VehicleDefinition::tiltrotor().to_vehicle().unwrap());
+            sim.state.position_ned_m.z = -20.0;
+            sim.transition_command = transition;
+            sim.transition_actual = transition;
+            sim.set_control(DVec3::ZERO, 0.5);
+            for motor in &mut sim.vehicle.motors {
+                motor.actual_output = 0.5;
+            }
+            sim.step(0.004);
+            sim.forces.thrust
+        };
+        let before = force(0.499);
+        let after = force(0.501);
+        assert!((before - after).length() < before.length() * 0.01);
+    }
+    #[test]
+    fn quadplane_transition_builds_airspeed_and_wing_lift() {
+        let definition = VehicleDefinition::quadplane();
+        let hover = definition.metrics().unwrap().hover_throttle;
+        let mut sim = Simulator::new(definition.to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -100.0;
+        sim.set_transition(1.0);
+        let mut maximum_airspeed: f64 = 0.0;
+        let mut maximum_lift: f64 = 0.0;
+        for _ in 0..3_500 {
+            sim.set_control(DVec3::ZERO, hover.max(0.58));
+            sim.step(0.004);
+            maximum_airspeed = maximum_airspeed.max(sim.forces.air_velocity_ned.length());
+            maximum_lift = maximum_lift.max(-sim.forces.lift.z);
+        }
+        assert!(maximum_airspeed > 9.0, "airspeed {maximum_airspeed}");
+        assert!(maximum_lift > sim.vehicle.mass() * GRAVITY * 0.35);
+        assert!(sim.state.position_ned_m.is_finite());
+    }
+    #[test]
+    fn tiltrotor_forward_and_back_transition_are_physical() {
+        let definition = VehicleDefinition::tiltrotor();
+        let mut sim = Simulator::new(definition.to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -150.0;
+        sim.set_transition(1.0);
+        let mut maximum_airspeed: f64 = 0.0;
+        let mut maximum_lift: f64 = 0.0;
+        for _ in 0..3_000 {
+            sim.set_control(DVec3::ZERO, 0.55);
+            sim.step(0.004);
+            maximum_airspeed = maximum_airspeed.max(sim.forces.air_velocity_ned.length());
+            maximum_lift = maximum_lift.max(-sim.forces.lift.z);
+        }
+        assert!(sim.transition_actual > 0.95);
+        assert!(maximum_airspeed > 10.0);
+        assert!(maximum_lift > sim.vehicle.mass() * GRAVITY * 0.3);
+        sim.set_transition(0.0);
+        for _ in 0..1_000 {
+            sim.set_control(DVec3::ZERO, 0.5);
+            sim.step(0.004);
+        }
+        assert!(sim.transition_actual < 0.05);
+        assert!(sim.vehicle.motors[0].direction.z < -0.99);
+        assert!(sim.state.position_ned_m.is_finite());
     }
 }

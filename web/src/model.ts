@@ -1,12 +1,21 @@
 export type Vec3 = [number, number, number];
 export interface SimState {
   time: number;
-  vehicleClass: "Multicopter" | "FixedWing";
+  vehicleClass: "Multicopter" | "FixedWing" | "QuadPlane" | "Tiltrotor";
   position: Vec3;
   velocity: Vec3;
   airVelocity: Vec3;
   angleOfAttack: number;
   stalled: boolean;
+  terrainHeight: number;
+  transition: {
+    command: number;
+    actual: number;
+    tiltAngle: number;
+    regime: "HOVER" | "TRANSITION" | "CRUISE";
+    verticalThrust: number;
+    forwardThrust: number;
+  };
   attitude: [number, number, number, number];
   euler: Vec3;
   rates: Vec3;
@@ -25,6 +34,8 @@ export interface SimState {
       cl: number;
       cd: number;
       stalled: boolean;
+      commandedDeflection: number;
+      actualDeflection: number;
     }>;
   };
   control: {

@@ -44,7 +44,7 @@ Static hover allocation solves four linear equations for vertical force and thre
 
 The Fixed Wing Trainer is an educational 1.7 m-span, 0.48 m²-wing aircraft of approximately 1.3 kg. Its 4-cell/3300 mAh battery drives one 15 N, 520 W forward propulsor. The conventional tail has a 0.10 m² elevator and 0.065 m² rudder. It is not based on a commercial airframe.
 
-Authoritative air velocity is `v_air,NED = v_vehicle,NED - v_wind,NED`. The body-to-NED quaternion inverse transforms it into body coordinates. Each surface also samples a bounded rotational contribution `0.1(ω × r)`; this and a speed-scaled angular damping approximation represent basic aerodynamic rate damping without a full distributed panel model.
+Authoritative air velocity is `v_air,NED = v_vehicle,NED - v_wind,NED`. The body-to-NED quaternion inverse transforms it into body coordinates. A surface at offset `r` from the CG samples the full rigid-body local velocity `v_surface,body = v_CG,body + ω_body × r_body`. A pitching tail, yawing fin, and rolling left/right wing therefore see different airflow and generate opposing aerodynamic moments. No frame-dependent angular-velocity multiplier or global damping torque is used.
 
 For horizontal surfaces, angle of attack is `α = atan2(Vz, Vx) + incidence + control_effect`. Because body +Z is down, a nose above its flight path produces positive body `Vz` and positive α. Vertical surfaces use sideslip `β = atan2(Vy, Vx)`. AoA is derived from airflow, never vehicle pitch alone.
 
@@ -54,7 +54,25 @@ Drag is opposite local relative velocity with `CD = CD0 + k CL² + 1.2 e²`, whe
 
 Every left/right wing, elevator and rudder has its own body position. Rust applies `τ = (r-CG) × (L+D)`. Ailerons use opposite incidence changes; elevator and rudder change their tail surface incidence. Consequently authority scales with dynamic pressure and is negligible while stationary. Control commands never directly inject attitude, velocity or arbitrary torque.
 
+The trainer's surface masses contribute point-mass and rectangular-plate intrinsic inertia. Its current diagonal approximation is approximately `Ix/Iy/Iz = 0.077/0.105/0.177 kg·m²`, consistent in order of magnitude with a 1.7 m, roughly 1.4 kg airframe. Earlier massless wings left `Ix` near `0.004 kg·m²`; combined with whole-wing control effectiveness this caused the excessive rotation corrected in the current model.
+
+Pilot commands target conservative 15° aileron, 18° elevator and 22° rudder limits. Their effective aerodynamic incidence factors are 0.06, 0.35 and 0.30 respectively. Degrees cross the schema/UI boundary once and become radians in Rust. Servos move actual deflection toward commanded deflection at a default 180°/s rather than teleporting. The trainer has 0.75° elevator trim at the documented 16 m/s reference condition.
+
+An educational neutral-point estimate area/lift-slope weights the main wing and a 75%-effective tail. Static margin is `(x_CG - x_neutral)/MAC` in body +X-forward coordinates. BUILD labels 5–30% as stable guidance; this is not a certification calculation.
+
 The simplified runway contact clamps penetration, damps forward/lateral motion lightly, and constrains roll/yaw while rolling. Once aerodynamic force creates upward velocity, the aircraft leaves the plane naturally. Low-impact contact settles; detailed wheels, suspension, tire steering and terrain collision shapes are not modelled.
+
+## Procedural terrain
+
+The default Alpine Range is a deterministic 6.4 km square heightfield with seed `1337`. Rust combines five-octave value-noise fBm, a ridged-noise term, broad valley shaping, three Gaussian pass cuts, and three landmark peaks. The runway footprint is analytically blended to the zero-metre datum; a lake basin is held below the 5 m water level. Elevation is bounded to -20…1250 m.
+
+Rust owns `TerrainDefinition::elevation_m(North, East)`. Physics queries its NED ground coordinate `Down = -elevation`; Three.js samples the same exported WASM function for every indexed mesh vertex. Terrain normals use centred height gradients and contact removes velocity into the local upward normal. This is an efficient heightfield/contact-point approximation, not triangle-mesh landing-gear collision.
+
+## VTOL composition
+
+QuadPlane Explorer combines four fixed upward lift units, one forward unit and the same aerodynamic surfaces. All rotor, wing, drag and gravity forces are evaluated continuously. Transition command and actual transition are rate-limited. Forward propulsion grows with transition; vertical support is reduced only as both transition and measured airspeed indicate that wing support is available.
+
+Tiltrotor Research VTOL uses four continuously rotating propulsion units. `0` is body `-Z` hover thrust and `1` is body `+X` cruise thrust. At tilt angle `θ`, direction is `(sin θ, 0, -cos θ)`; nacelles slew at 30°/s. Multicopter differentials fade as tilt approaches cruise while aerodynamic control surfaces remain active. This is a research/education transition model, not a validated tiltrotor control law.
 
 ## Approximated
 

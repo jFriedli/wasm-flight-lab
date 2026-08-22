@@ -18,6 +18,8 @@ export interface MotorDefinition {
   spinUpTimeS: number;
   spinDownTimeS: number;
   propeller: PropellerDefinition;
+  role?: "lift" | "forward" | "tilt";
+  tiltRateDegS?: number;
 }
 export interface BatteryDefinition {
   cells: number;
@@ -32,7 +34,8 @@ export interface PayloadDefinition {
   massKg: number;
   positionM: Vec3;
 }
-export type VehicleClassDefinition = "multicopter" | "fixedWing";
+export type VehicleClassDefinition =
+  "multicopter" | "fixedWing" | "quadPlane" | "tiltrotor";
 export interface AeroSurfaceDefinition {
   name: string;
   positionM: Vec3;
@@ -49,6 +52,9 @@ export interface AeroSurfaceDefinition {
   controlSign: number;
   maxDeflectionDeg: number;
   controlEffectiveness: number;
+  massKg?: number;
+  trimDeflectionDeg?: number;
+  servoRateDegS?: number;
 }
 export interface VehicleDefinition {
   schemaVersion: 1;
@@ -80,6 +86,7 @@ export interface EngineeringMetrics {
   estimatedStallSpeedMps: number;
   powerToWeightWKg: number;
   cgMacFraction: number;
+  estimatedStaticMargin: number;
 }
 export const STORAGE_KEY = "flightlab.vehicles.v1",
   MAX_FILE_BYTES = 256_000;
@@ -107,7 +114,9 @@ export function validateVehicle(value: unknown): value is VehicleDefinition {
     return false;
   if (
     v.vehicleClass !== undefined &&
-    !["multicopter", "fixedWing"].includes(v.vehicleClass)
+    !["multicopter", "fixedWing", "quadPlane", "tiltrotor"].includes(
+      v.vehicleClass,
+    )
   )
     return false;
   if (
@@ -133,7 +142,11 @@ export function validateVehicle(value: unknown): value is VehicleDefinition {
           ["none", "roll", "pitch", "yaw"].includes(s.controlAxis) &&
           finite(s.controlSign, -1, 1) &&
           finite(s.maxDeflectionDeg, 0, 60) &&
-          finite(s.controlEffectiveness, 0, 2),
+          finite(s.controlEffectiveness, 0, 2) &&
+          (s.massKg === undefined || finite(s.massKg, 0.001, 50)) &&
+          (s.trimDeflectionDeg === undefined ||
+            finite(s.trimDeflectionDeg, -20, 20)) &&
+          (s.servoRateDegS === undefined || finite(s.servoRateDegS, 10, 1000)),
       ))
   )
     return false;
@@ -145,7 +158,12 @@ export function validateVehicle(value: unknown): value is VehicleDefinition {
     return false;
   if (
     !Array.isArray(v.motors) ||
-    v.motors.length !== 4 ||
+    v.motors.length !==
+      (v.vehicleClass === "fixedWing"
+        ? 1
+        : v.vehicleClass === "quadPlane"
+          ? 5
+          : 4) ||
     !Array.isArray(v.payloads) ||
     v.payloads.length > 32
   )
@@ -178,7 +196,10 @@ export function validateVehicle(value: unknown): value is VehicleDefinition {
         finite(m.propeller.bladeCount, 1, 8) &&
         Number.isInteger(m.propeller.bladeCount) &&
         finite(m.propeller.efficiency, 0.1, 1) &&
-        finite(m.propeller.massKg, 0.001, 5),
+        finite(m.propeller.massKg, 0.001, 5) &&
+        (m.role === undefined ||
+          ["lift", "forward", "tilt"].includes(m.role)) &&
+        (m.tiltRateDegS === undefined || finite(m.tiltRateDegS, 5, 180)),
     ) &&
     v.payloads.every(
       (p) =>

@@ -6,7 +6,7 @@ An open-source aircraft-design and flight-dynamics lab whose standard simulator 
 
 ## Current vertical slice
 
-The M4 build adds RC-like desktop control and a physically simulated Fixed Wing Trainer to the quad workshop. Individual wings and tail surfaces derive lift, drag, stall and moments from local air-relative velocity; aileron, elevator and rudder authority grows with airspeed. Frame, propulsion, battery, payload and aerodynamic parameters remain editable physical runtime inputs—not display-only values. See [STATUS.md](STATUS.md) for exact scope.
+The current build stabilizes the physical Fixed Wing Trainer, adds a deterministic Alpine flight world, and introduces experimental QuadPlane and tiltrotor composition. Surface-local rigid-body airflow now supplies natural rate damping; seeded Rust terrain drives both rendering and collision. Frame, propulsion, battery, payload, aerodynamic, servo and VTOL parameters remain physical runtime inputs—not display-only values. See [STATUS.md](STATUS.md) for exact scope.
 
 ## Develop
 
@@ -35,7 +35,9 @@ The Gamepad panel supports ordinary pads and USB RC/FPV radios exposed by the br
 
 CHASE, aircraft-mounted FPV and mouse-orbit FREE cameras are available from the viewport toolbar. Controller P/I/D values take effect live; the bounded graph compares target rate, measured rate and output.
 
-BUILD opens the workshop without reloading. Select Beginner Quad, Freestyle Quad, or Fixed Wing Trainer; edit bounded SI values, inspect the model and magenta CG marker, then choose TEST FLIGHT. The trainer exposes wing/tail area, span, chord, incidence, lift slope, stall angle, drag, deflection and effectiveness plus shared propulsion/battery/payload components. Exported `.flightlab.json` files are human-readable, versioned, size-limited and validated again in Rust before use.
+BUILD opens the workshop without reloading. Select a quad, Fixed Wing Trainer, QuadPlane Explorer, or Tiltrotor Research VTOL; edit bounded SI values, inspect the model and magenta CG marker, then choose TEST FLIGHT. The trainer exposes surface mass, trim, servo rate and aerodynamic parameters. VTOL motors expose role, placement and tilt rate. Exported `.flightlab.json` files remain human-readable, bounded and validated again in Rust.
+
+ALPINE RANGE is the default environment; TEST RANGE remains available for debugging. The 6.4 km seeded world includes a flat 700 m runway, valley, ridges, three passes, lake, bridge, huts, hangar, peak antenna and sparse instanced trees. The map, NED heading, coordinates and home bearing are generated locally. T/G or the transition slider commands VTOL hover/cruise progression.
 
 ## Static deployment and base paths
 
