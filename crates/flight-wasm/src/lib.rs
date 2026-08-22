@@ -1,5 +1,6 @@
 use flight_core::{
     PropulsionRole, Simulator,
+    atmosphere::{WeatherPreset, WindField},
     control::{AxisTuning, ControlConfig, DEG_TO_RAD, FlightMode},
     terrain::{DEFAULT_TERRAIN_SEED, TerrainDefinition, TerrainKind},
     vehicle::VehicleDefinition,
@@ -39,6 +40,30 @@ impl FlightSimulator {
             },
             seed,
         };
+    }
+    pub fn set_weather(&mut self, preset: &str) {
+        let preset = match preset {
+            "breeze" => WeatherPreset::Breeze,
+            "alpine" => WeatherPreset::Alpine,
+            "soaring" => WeatherPreset::Soaring,
+            "strong" => WeatherPreset::StrongWind,
+            _ => WeatherPreset::Calm,
+        };
+        self.inner.environment.wind = WindField::preset(preset);
+    }
+    pub fn set_custom_wind(
+        &mut self,
+        speed_mps: f64,
+        direction_from_deg: f64,
+        gust_strength_mps: f64,
+        turbulence_strength_mps: f64,
+    ) {
+        let mut wind = WindField::preset(WeatherPreset::Custom);
+        wind.speed_mps = finite(speed_mps, 0.0, 30.0);
+        wind.direction_from_deg = finite(direction_from_deg, 0.0, 360.0);
+        wind.gust_strength_mps = finite(gust_strength_mps, 0.0, 12.0);
+        wind.turbulence_strength_mps = finite(turbulence_strength_mps, 0.0, 6.0);
+        self.inner.environment.wind = wind;
     }
     pub fn terrain_height(&self, north_m: f64, east_m: f64) -> f64 {
         if !north_m.is_finite() || !east_m.is_finite() {
@@ -100,7 +125,15 @@ impl FlightSimulator {
     }
     pub fn spawn(&mut self, airborne: bool) {
         self.reset();
-        self.inner.state.position_ned_m.z = if airborne { -1.5 } else { 0.0 };
+        self.inner.state.position_ned_m.z = if airborne {
+            if self.inner.vehicle.class == flight_core::VehicleClass::Multicopter {
+                -1.5
+            } else {
+                -25.0
+            }
+        } else {
+            0.0
+        };
     }
     pub fn set_attitude_degrees(&mut self, roll: f64, pitch: f64, yaw: f64) {
         if [roll, pitch, yaw]
@@ -219,10 +252,19 @@ impl FlightSimulator {
             .map(|motor| motor.max_thrust_n * motor.actual_output * motor.direction.x.max(0.0))
             .sum::<f64>();
         let airspeed = self.inner.forces.air_velocity_ned.length();
-        let regime = if transition_actual < 0.2 && airspeed < 8.0 {
+        let weight = self.inner.vehicle.mass() * self.inner.environment.gravity_mps2;
+        let wing_support_fraction = (-self.inner.forces.lift.z / weight).clamp(0.0, 2.0);
+        let vertical_reserve = vertical_propulsion - (weight + self.inner.forces.lift.z).max(0.0);
+        let regime = if transition_command < transition_actual - 0.05 {
+            "BACK TRANSITION"
+        } else if transition_actual < 0.2 && airspeed < 5.0 {
             "HOVER"
+        } else if transition_actual < 0.2 && airspeed < 10.0 {
+            "ACCELERATING"
+        } else if transition_actual < 0.35 && airspeed >= 10.0 {
+            "TRANSITION READY"
         } else if transition_actual > 0.8 && airspeed > 10.0 {
-            "CRUISE"
+            "WING BORNE"
         } else {
             "TRANSITION"
         };
@@ -235,11 +277,12 @@ impl FlightSimulator {
             "euler": [roll, pitch, yaw],
             "rates": self.inner.state.angular_rate_body_rps.to_array(),
             "airVelocity": self.inner.forces.air_velocity_ned.to_array(),
+            "wind": {"combined": self.inner.forces.wind.combined_ned.to_array(), "base": self.inner.forces.wind.base_ned.to_array(), "gust": self.inner.forces.wind.gust_ned.to_array(), "turbulence": self.inner.forces.wind.turbulence_ned.to_array(), "terrain": self.inner.forces.wind.terrain_ned.to_array(), "thermal": self.inner.forces.wind.thermal_ned.to_array()},
             "angleOfAttack": self.inner.forces.angle_of_attack_rad,
             "stalled": self.inner.forces.stalled,
             "terrainHeight": terrain_height,
-            "transition": {"command": transition_command, "actual": transition_actual, "tiltAngle": tilt_angle, "regime": regime, "verticalThrust": vertical_propulsion, "forwardThrust": forward_propulsion},
-            "forces": {"gravity": self.inner.forces.gravity.to_array(), "thrust": self.inner.forces.thrust.to_array(), "lift": self.inner.forces.lift.to_array(), "drag": self.inner.forces.drag.to_array(), "motors": motors, "surfaces": surfaces},
+            "transition": {"command": transition_command, "actual": transition_actual, "tiltAngle": tilt_angle, "regime": regime, "verticalThrust": vertical_propulsion, "forwardThrust": forward_propulsion, "wingSupportFraction": wing_support_fraction, "verticalThrustReserve": vertical_reserve},
+            "forces": {"gravity": self.inner.forces.gravity.to_array(), "thrust": self.inner.forces.thrust.to_array(), "lift": self.inner.forces.lift.to_array(), "drag": self.inner.forces.drag.to_array(), "propulsionTorqueBody": self.inner.forces.propulsion_torque_body.to_array(), "aerodynamicTorqueBody": self.inner.forces.aerodynamic_torque_body.to_array(), "totalTorqueBody": self.inner.forces.torque_body.to_array(), "motors": motors, "surfaces": surfaces},
             "control": {"target": t.target_rate_rps.to_array(), "actual": t.actual_rate_rps.to_array(), "error": t.error_rps.to_array(), "output": t.output.to_array(), "throttle": self.inner.throttle(), "sticks": self.inner.control_sticks().to_array(), "motors": t.motors, "actualMotors": self.inner.vehicle.motors.iter().map(|motor| motor.actual_output).collect::<Vec<_>>()},
             "battery": {"remainingMah": self.inner.battery_state.remaining_mah, "consumedWh": self.inner.battery_state.consumed_wh, "voltage": self.inner.battery_state.voltage_v, "current": self.inner.battery_state.current_a},
             "mass": self.inner.vehicle.mass(),
@@ -247,6 +290,14 @@ impl FlightSimulator {
             "inertia": self.inner.vehicle.inertia_kg_m2.to_array()
         })
         .to_string()
+    }
+}
+
+fn finite(value: f64, min: f64, max: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        min
     }
 }
 impl Default for FlightSimulator {

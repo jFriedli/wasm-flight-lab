@@ -40,6 +40,14 @@ Power is estimated as `Pmax × output^1.5`. Battery state integrates current con
 
 Static hover allocation solves four linear equations for vertical force and three body moments. It exposes the command imbalance caused by an offset CG and warns when the solution saturates.
 
+### Flight-quality balance and multicopter drag
+
+Neutral mouse and calibrated Gamepad centres now resolve to exact zero before Rust receives the normalized stick. Acro zero pitch requests zero body pitch rate; Angle zero pitch requests a level attitude. Fixed-wing elevator trim is applied fully only to the Fixed Wing Trainer and is blended with actual transition for winged VTOLs, so it cannot bias hover.
+
+The earlier quad presets placed the battery/camera combined CG slightly aft of their symmetric rotor thrust centroid. That small but real moment, plus inherited wing trim on VTOLs, caused the common nose-up observation. Default lift-motor layouts are now centered on the component-derived non-hover mass balance point, and the quad battery positions balance their camera payload. Equal hover thrust consequently has negligible roll/pitch moment without controller compensation.
+
+Multicopter body drag is evaluated in body axes from projected frame areas. For each axis `i`, `D_i = -½ ρ Cd A_i |V_i|V_i`, with `Cd = 0.9` and `A = (YZ, XZ, XY)`, then transformed to NED. The old isotropic coefficient produced about 39 N at 20 m/s—more than the Beginner Quad's entire static thrust. The corrected Beginner forward drag is about 4.85 N at 20 m/s. Analytical level-translation estimates are about 21.7 m/s at 30° for Beginner and 39.3 m/s at 45° for the physically smaller Freestyle frame; these are educational still-air estimates, not guaranteed flight envelopes.
+
 ## Fixed-wing aerodynamics
 
 The Fixed Wing Trainer is an educational 1.7 m-span, 0.48 m²-wing aircraft of approximately 1.3 kg. Its 4-cell/3300 mAh battery drives one 15 N, 520 W forward propulsor. The conventional tail has a 0.10 m² elevator and 0.065 m² rudder. It is not based on a commercial airframe.
@@ -56,7 +64,7 @@ Every left/right wing, elevator and rudder has its own body position. Rust appli
 
 The trainer's surface masses contribute point-mass and rectangular-plate intrinsic inertia. Its current diagonal approximation is approximately `Ix/Iy/Iz = 0.077/0.105/0.177 kg·m²`, consistent in order of magnitude with a 1.7 m, roughly 1.4 kg airframe. Earlier massless wings left `Ix` near `0.004 kg·m²`; combined with whole-wing control effectiveness this caused the excessive rotation corrected in the current model.
 
-Pilot commands target conservative 15° aileron, 18° elevator and 22° rudder limits. Their effective aerodynamic incidence factors are 0.06, 0.35 and 0.30 respectively. Degrees cross the schema/UI boundary once and become radians in Rust. Servos move actual deflection toward commanded deflection at a default 180°/s rather than teleporting. The trainer has 0.75° elevator trim at the documented 16 m/s reference condition.
+Pilot commands target conservative 15° aileron, 18° elevator and 22° rudder limits. Their effective aerodynamic incidence factors are 0.09, 0.35 and 0.30 respectively. The aileron factor was increased from 0.06 after measured response showed excess latency; throws, inertia, full local airflow and natural rate damping remain unchanged. Degrees cross the schema/UI boundary once and become radians in Rust. Servos move actual deflection toward commanded deflection at a default 180°/s rather than teleporting. The trainer has 0.75° elevator trim at the documented 16 m/s reference condition. At roughly 16–25 m/s the current browser profile reaches a 30° bank in about 1.3 seconds under a sustained keyboard command while remaining rate-bounded.
 
 An educational neutral-point estimate area/lift-slope weights the main wing and a 75%-effective tail. Static margin is `(x_CG - x_neutral)/MAC` in body +X-forward coordinates. BUILD labels 5–30% as stable guidance; this is not a certification calculation.
 
@@ -73,6 +81,16 @@ Rust owns `TerrainDefinition::elevation_m(North, East)`. Physics queries its NED
 QuadPlane Explorer combines four fixed upward lift units, one forward unit and the same aerodynamic surfaces. All rotor, wing, drag and gravity forces are evaluated continuously. Transition command and actual transition are rate-limited. Forward propulsion grows with transition; vertical support is reduced only as both transition and measured airspeed indicate that wing support is available.
 
 Tiltrotor Research VTOL uses four continuously rotating propulsion units. `0` is body `-Z` hover thrust and `1` is body `+X` cruise thrust. At tilt angle `θ`, direction is `(sin θ, 0, -cos θ)`; nacelles slew at 30°/s. Multicopter differentials fade as tilt approaches cruise while aerodynamic control surfaces remain active. This is a research/education transition model, not a validated tiltrotor control law.
+
+VTOL lift units are longitudinally centered on the CG of the non-hover components, eliminating equal-thrust hover pitch moment. Fixed-wing trim fades in with actual transition. The common rate/attitude controller effort drives rotor differential and aerodynamic surfaces; rotor authority fades continuously for the tiltrotor while surface authority emerges naturally with dynamic pressure. Telemetry separates propulsion and aerodynamic pitch moments, wing support fraction, vertical thrust reserve and actual transition state. QuadPlane lift support decreases only when actual airspeed indicates growing wing effectiveness; no slider threshold changes the force model.
+
+## Wind and Alpine airflow
+
+`WindField::sample(position_ned, simulation_time, terrain)` is authoritative for every body and aerodynamic-surface relative-air calculation. Aviation direction is FROM: a 270° wind travels toward +East, while a 0° wind travels toward South (`-North`). Air velocity remains `vehicle velocity - local wind`, so headwind/tailwind airspeed differences emerge directly.
+
+Gusts combine three bounded low-frequency sinusoids along the base-wind direction. Turbulence combines deterministic spatial/temporal waves on all three axes. These fields are continuous and reproducible, not independent frame noise or a certified Dryden/von Kármán spectrum.
+
+Alpine terrain flow uses the authoritative height gradient. Horizontal wind dotted with the gradient produces bounded windward updraft, decaying exponentially with height above terrain; downslope flow produces weaker sink and a deterministic crosswind rotor component. The SOARING preset adds five deterministic Gaussian thermals with smooth radial and vertical falloff, all away from the runway. Ridge/lee flow and thermals alter the air-mass velocity—not aircraft lift directly—so all effects pass through the same AoA/lift/drag model. This is an educational orographic approximation, not CFD.
 
 ## Approximated
 

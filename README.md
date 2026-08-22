@@ -6,7 +6,7 @@ An open-source aircraft-design and flight-dynamics lab whose standard simulator 
 
 ## Current vertical slice
 
-The current build stabilizes the physical Fixed Wing Trainer, adds a deterministic Alpine flight world, and introduces experimental QuadPlane and tiltrotor composition. Surface-local rigid-body airflow now supplies natural rate damping; seeded Rust terrain drives both rendering and collision. Frame, propulsion, battery, payload, aerodynamic, servo and VTOL parameters remain physical runtime inputs—not display-only values. See [STATUS.md](STATUS.md) for exact scope.
+The current build balances neutral hover, restores physically useful multicopter performance, improves the stable trainer's turn response, and adds authoritative deterministic Alpine weather. Surface-local rigid-body airflow supplies natural rate damping; seeded Rust terrain drives rendering, collision and orographic wind. Frame, propulsion, battery, payload, aerodynamic, servo, VTOL and atmosphere parameters remain physical runtime inputs—not display-only values. See [STATUS.md](STATUS.md) for exact scope.
 
 ## Develop
 
@@ -38,6 +38,8 @@ CHASE, aircraft-mounted FPV and mouse-orbit FREE cameras are available from the 
 BUILD opens the workshop without reloading. Select a quad, Fixed Wing Trainer, QuadPlane Explorer, or Tiltrotor Research VTOL; edit bounded SI values, inspect the model and magenta CG marker, then choose TEST FLIGHT. The trainer exposes surface mass, trim, servo rate and aerodynamic parameters. VTOL motors expose role, placement and tilt rate. Exported `.flightlab.json` files remain human-readable, bounded and validated again in Rust.
 
 ALPINE RANGE is the default environment; TEST RANGE remains available for debugging. The 6.4 km seeded world includes a flat 700 m runway, valley, ridges, three passes, lake, bridge, huts, hangar, peak antenna and sparse instanced trees. The map, NED heading, coordinates and home bearing are generated locally. T/G or the transition slider commands VTOL hover/cruise progression.
+
+The ATMOSPHERE panel provides CALM, BREEZE, ALPINE, SOARING, STRONG WIND and bounded CUSTOM settings. Wind direction uses aviation FROM semantics. Gusts, turbulence, ridge lift, lee sink/rotor and thermals are deterministic Rust air-mass velocities used by the actual aerodynamic model. The windsock and optional airflow arrows display that same local field.
 
 ## Static deployment and base paths
 

@@ -12,9 +12,19 @@ export interface SimState {
     command: number;
     actual: number;
     tiltAngle: number;
-    regime: "HOVER" | "TRANSITION" | "CRUISE";
+    regime: string;
     verticalThrust: number;
     forwardThrust: number;
+    wingSupportFraction: number;
+    verticalThrustReserve: number;
+  };
+  wind: {
+    combined: Vec3;
+    base: Vec3;
+    gust: Vec3;
+    turbulence: Vec3;
+    terrain: Vec3;
+    thermal: Vec3;
   };
   attitude: [number, number, number, number];
   euler: Vec3;
@@ -24,6 +34,9 @@ export interface SimState {
     thrust: Vec3;
     lift: Vec3;
     drag: Vec3;
+    propulsionTorqueBody: Vec3;
+    aerodynamicTorqueBody: Vec3;
+    totalTorqueBody: Vec3;
     motors: Array<{ positionBody: Vec3; forceNed: Vec3 }>;
     surfaces: Array<{
       name: string;

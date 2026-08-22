@@ -67,7 +67,7 @@ document.querySelector(".help")!.textContent =
   "W/S throttle · A/D yaw · Mouse pitch/roll · Arrows fallback · R reset";
 view.insertAdjacentHTML(
   "beforeend",
-  `<div id="mouseControls" class="mouse-controls"><button id="mouseFlight">ENABLE MOUSE FLIGHT</button><span id="mouseStatus">Click to capture · Esc releases</span><label>Source <select id="inputSource"><option value="mouse">KEYBOARD + MOUSE</option><option value="gamepad">GAMEPAD</option></select></label><label>Sensitivity <input id="mouseSensitivity" type="range" min="0.0005" max="0.008" step="0.0005" value="0.0025"></label><label>Return <input id="mouseReturn" type="range" min="0.3" max="4" step="0.1" value="1.4"></label><div id="virtualStick"><i></i><b>↑ PITCH FORWARD</b></div></div>`,
+  `<div id="mouseControls" class="mouse-controls"><button id="mouseFlight">ENABLE MOUSE FLIGHT</button><span id="mouseStatus">Click to capture · Esc releases</span><label>Source <select id="inputSource"><option value="mouse">KEYBOARD + MOUSE</option><option value="gamepad">GAMEPAD</option></select></label><label>Sensitivity <input id="mouseSensitivity" type="range" min="0.0005" max="0.008" step="0.0005" value="0.0025"></label><label>Return <input id="mouseReturn" type="range" min="0.3" max="4" step="0.1" value="1.4"></label><div id="virtualStick"><i></i><b>↑ PITCH FORWARD</b></div><small id="pitchInputTelemetry">Pitch raw 0.000 · normalized 0.000 · target 0.0°/s · output 0.000</small></div>`,
 );
 view.insertAdjacentHTML(
   "beforeend",
@@ -86,6 +86,12 @@ document
   .insertAdjacentHTML(
     "beforeend",
     '<span>ENV</span><select id="environment"><option value="alpine">ALPINE RANGE</option><option value="test">TEST RANGE</option></select>',
+  );
+document
+  .querySelector("aside")!
+  .insertAdjacentHTML(
+    "beforeend",
+    `<details id="weatherPanel"><summary>ATMOSPHERE</summary><label>Weather <select id="weather"><option value="calm">CALM</option><option value="breeze">BREEZE</option><option value="alpine">ALPINE</option><option value="soaring">SOARING</option><option value="strong">STRONG WIND</option><option value="custom">CUSTOM</option></select></label><div class="response-grid"><label>Wind m/s<input id="windSpeed" type="number" min="0" max="30" step="0.5" value="0"></label><label>From °<input id="windDirection" type="number" min="0" max="360" step="5" value="270"></label><label>Gust m/s<input id="gustStrength" type="number" min="0" max="12" step="0.2" value="0"></label><label>Turbulence m/s<input id="turbulenceStrength" type="number" min="0" max="6" step="0.1" value="0"></label></div><label><input id="airflow" type="checkbox"> Show airflow</label><p id="windReadout" class="note">Calm · local wind 0.0 m/s</p></details>`,
   );
 scene.background = new THREE.Color(0x8fb9cf);
 scene.fog = new THREE.Fog(0x8fb9cf, 900, 5_500);
@@ -108,6 +114,48 @@ let alpineEnvironment = true;
 sim.set_environment(true, TERRAIN_SEED);
 let terrainGroup = createTerrain(sim, true);
 scene.add(terrainGroup);
+const weather = document.querySelector<HTMLSelectElement>("#weather")!;
+const weatherInputs = {
+  speed: document.querySelector<HTMLInputElement>("#windSpeed")!,
+  direction: document.querySelector<HTMLInputElement>("#windDirection")!,
+  gust: document.querySelector<HTMLInputElement>("#gustStrength")!,
+  turbulence: document.querySelector<HTMLInputElement>("#turbulenceStrength")!,
+};
+const WEATHER_VALUES: Record<string, [number, number, number, number]> = {
+  calm: [0, 270, 0, 0],
+  breeze: [5, 270, 1.2, 0.35],
+  alpine: [8, 270, 2, 0.8],
+  soaring: [7, 270, 1, 0.4],
+  strong: [14, 250, 4, 1.8],
+};
+function applyWeather() {
+  if (weather.value === "custom") {
+    sim.set_custom_wind(
+      Number(weatherInputs.speed.value),
+      Number(weatherInputs.direction.value),
+      Number(weatherInputs.gust.value),
+      Number(weatherInputs.turbulence.value),
+    );
+    return;
+  }
+  sim.set_weather(weather.value);
+  const values = WEATHER_VALUES[weather.value];
+  [
+    weatherInputs.speed,
+    weatherInputs.direction,
+    weatherInputs.gust,
+    weatherInputs.turbulence,
+  ].forEach((input, index) => (input.value = String(values[index])));
+}
+weather.onchange = applyWeather;
+Object.values(weatherInputs).forEach(
+  (input) =>
+    (input.onchange = () => {
+      weather.value = "custom";
+      applyWeather();
+    }),
+);
+applyWeather();
 const runway = new THREE.Mesh(
   new THREE.PlaneGeometry(18, 700),
   new THREE.MeshStandardMaterial({ color: 0x30363a }),
@@ -115,6 +163,21 @@ const runway = new THREE.Mesh(
 runway.rotation.x = -Math.PI / 2;
 runway.position.y = 0.012;
 scene.add(runway);
+const windsock = new THREE.Group();
+const windsockPole = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.035, 0.045, 3, 8),
+  new THREE.MeshStandardMaterial({ color: 0xd6e5ea }),
+);
+windsockPole.position.y = 1.5;
+const windsockFabric = new THREE.Mesh(
+  new THREE.ConeGeometry(0.24, 1.5, 10, 1, true),
+  new THREE.MeshStandardMaterial({ color: 0xff6f3d, side: THREE.DoubleSide }),
+);
+windsockFabric.rotation.z = -Math.PI / 2;
+windsockFabric.position.set(0.75, 2.85, 0);
+windsock.add(windsockPole, windsockFabric);
+windsock.position.set(24, 0, -40);
+scene.add(windsock);
 for (let i = -300; i <= 300; i += 30) {
   const line = new THREE.Mesh(
     new THREE.PlaneGeometry(0.35, 12),
@@ -294,6 +357,15 @@ const surfaceArrows = Array.from(
       0x79f2a6,
     ),
 );
+const airflowArrows = [0x3de3ff, 0xffcf4a, 0xc28cff, 0x79f2a6].map(
+  (color) =>
+    new THREE.ArrowHelper(
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(),
+      1,
+      color,
+    ),
+);
 scene.add(
   thrustArrow,
   velocityArrow,
@@ -302,6 +374,7 @@ scene.add(
   dragArrow,
   ...motorArrows,
   ...surfaceArrows,
+  ...airflowArrows,
 );
 let profile: ControlProfile = {
     ...PROFILES.BEGINNER,
@@ -317,6 +390,7 @@ let profile: ControlProfile = {
   rangeCapture = false;
 let inputSource: "mouse" | "gamepad" = "mouse";
 let virtualStick = { roll: 0, pitch: 0 };
+let lastRawPitch = 0;
 const commands = { roll: 0, pitch: 0, yaw: 0 },
   keys = new Set<string>();
 const calibration = loadCalibration(localStorage);
@@ -502,6 +576,17 @@ const workshop = setupWorkshop(root, sim, (definition) => {
     definition.vehicleClass === "quadPlane" ||
     definition.vehicleClass === "tiltrotor";
   const winged = fixedWing || vtol;
+  if (vtol) {
+    mode = "ANGLE";
+    document
+      .querySelectorAll("[data-mode]")
+      .forEach((element) =>
+        element.classList.toggle(
+          "active",
+          (element as HTMLElement).dataset.mode === "ANGLE",
+        ),
+      );
+  }
   fixedWingVisual.visible = winged;
   quadVisuals.forEach(
     (object, index) => (object.visible = !winged || (vtol && index > 0)),
@@ -522,6 +607,7 @@ const workshop = setupWorkshop(root, sim, (definition) => {
     estimatedStallSpeedMps: number;
   };
   activeHoverThrottle = Math.min(1, engineering.hoverThrottle);
+  applyProfile(definition.preset === "freestyle" ? "SPORT" : "BEGINNER");
   reset();
   collective = fixedWing ? 0 : activeHoverThrottle;
   document.querySelector("#modeReadout")!.textContent = fixedWing
@@ -532,7 +618,11 @@ const workshop = setupWorkshop(root, sim, (definition) => {
   document.querySelector<HTMLButtonElement>(
     "[data-profile='BEGINNER']",
   )!.textContent = fixedWing ? "TRAINER" : "BEGINNER";
-  mouseSensitivity.value = fixedWing ? "0.0015" : "0.0025";
+  mouseSensitivity.value = fixedWing
+    ? "0.002"
+    : definition.preset === "freestyle"
+      ? "0.003"
+      : "0.0025";
   document
     .querySelectorAll<HTMLButtonElement>("[data-mode]")
     .forEach((button) => (button.disabled = fixedWing));
@@ -716,6 +806,7 @@ function updateInput(dt: number) {
     gamepadWasActive = true;
     const p = gamepadCommands(pad, calibration);
     targets = { roll: p.roll, pitch: p.pitch, yaw: p.yaw };
+    lastRawPitch = pad.axes[calibration.axes.pitch.source] ?? 0;
     collective = p.throttle;
     document.querySelector("#gamepadState")!.textContent =
       `Connected: ${pad.id} · ${pad.axes.length} axes · ${pad.buttons.length} buttons`;
@@ -735,6 +826,7 @@ function updateInput(dt: number) {
       ).toFixed(3);
     }
   } else {
+    lastRawPitch = virtualStick.pitch;
     document.querySelector("#gamepadState")!.textContent = gamepadWasActive
       ? "Controller disconnected · fail-safe active"
       : "No controller connected";
@@ -748,13 +840,14 @@ function updateInput(dt: number) {
         collective = Math.max(0, collective - profile.throttleSlew * dt);
     }
   }
+  const fixedWingInput = state.vehicleClass === "FixedWing";
   for (const axis of ["roll", "pitch", "yaw"] as const)
     commands[axis] = slew(
       commands[axis],
       shape(
-        targets[axis] * (state.vehicleClass === "FixedWing" ? 0.7 : 1),
+        targets[axis] * (fixedWingInput ? 0.9 : 1),
         0,
-        profile.expo,
+        fixedWingInput ? 0.35 : profile.expo,
       ),
       profile.attack,
       profile.release,
@@ -827,6 +920,8 @@ function updateHud() {
     `${Math.max(0, (state.battery.remainingMah / activeBatteryCapacityMah) * 100).toFixed(0)}%`;
   document.querySelector("#inputReadout")!.textContent =
     inputSource === "gamepad" ? "Gamepad" : "Keyboard + Mouse";
+  document.querySelector("#pitchInputTelemetry")!.textContent =
+    `Pitch raw ${lastRawPitch.toFixed(3)} · normalized ${state.control.sticks[1].toFixed(3)} · target ${(state.control.target[1] * DEG).toFixed(1)}°/s · output ${state.control.output[1].toFixed(3)}`;
   const fixedWing = state.vehicleClass === "FixedWing";
   const vtol =
     state.vehicleClass === "QuadPlane" || state.vehicleClass === "Tiltrotor";
@@ -849,7 +944,7 @@ function updateHud() {
     ? `${state.transition.regime} · ${(state.transition.actual * 100).toFixed(0)}% · tilt ${(state.transition.tiltAngle * DEG).toFixed(0)}°`
     : "—";
   document.querySelector("#vtolForces")!.textContent = vtol
-    ? `vertical ${state.transition.verticalThrust.toFixed(1)} N · forward ${state.transition.forwardThrust.toFixed(1)} N`
+    ? `vertical ${state.transition.verticalThrust.toFixed(1)} N · reserve ${state.transition.verticalThrustReserve.toFixed(1)} N · forward ${state.transition.forwardThrust.toFixed(1)} N · wing ${(state.transition.wingSupportFraction * 100).toFixed(0)}% · pitch rotor ${state.forces.propulsionTorqueBody[1].toFixed(2)} / aero ${state.forces.aerodynamicTorqueBody[1].toFixed(2)} Nm`
     : "—";
   document.querySelector("#transitionControl output")!.textContent =
     `${Math.round(state.transition.actual * 100)}%`;
@@ -875,6 +970,9 @@ function updateHud() {
     `HOME ${(homeDistance / 1000).toFixed(2)} km · ${homeBearing.toFixed(0).padStart(3, "0")}°`;
   document.querySelector("#coordinates")!.textContent =
     `N ${state.position[0].toFixed(0)} · E ${state.position[1].toFixed(0)}`;
+  const windSpeed = Math.hypot(...state.wind.combined);
+  document.querySelector("#windReadout")!.textContent =
+    `${weather.options[weather.selectedIndex].text} · local wind ${windSpeed.toFixed(1)} m/s · vertical ${(-state.wind.combined[2]).toFixed(1)} m/s`;
   if (performance.now() - lastMapUpdate > 100) {
     drawNavigationMap(mapCanvas, mapBackground, state.position, state.euler[2]);
     lastMapUpdate = performance.now();
@@ -922,6 +1020,7 @@ function frame(now: number) {
   view.dataset.terrainHeight = String(state.terrainHeight);
   view.dataset.environment = alpineEnvironment ? "alpine" : "test";
   view.dataset.rates = state.rates.join(",");
+  view.dataset.wind = state.wind.combined.join(",");
   nedPositionToThree(state.position, craft.position);
   attitudeBodyToNedToThree(state.attitude, craft.quaternion);
   const setArrow = (
@@ -977,6 +1076,28 @@ function frame(now: number) {
     if (force.lengthSq() > 1e-12) arrow.setDirection(force.normalize());
     arrow.setLength(Math.max(0.01, force.length() / 8));
   });
+  const airflowVisible =
+    document.querySelector<HTMLInputElement>("#airflow")!.checked;
+  const airflowVectors = [
+    state.wind.combined,
+    state.wind.base,
+    state.wind.terrain,
+    state.wind.thermal,
+  ];
+  airflowArrows.forEach((arrow, index) => {
+    const vector = nedVectorToThree(airflowVectors[index]);
+    const magnitude = vector.length();
+    arrow.position
+      .copy(craft.position)
+      .add(new THREE.Vector3((index - 1.5) * 0.35, 0.7, 0));
+    if (magnitude > 1e-4) arrow.setDirection(vector.normalize());
+    arrow.setLength(Math.max(0.03, magnitude * 0.18));
+    arrow.visible = airflowVisible;
+  });
+  const windThree = nedVectorToThree(state.wind.combined);
+  windsockFabric.scale.y = Math.max(0.15, Math.min(1, windThree.length() / 8));
+  if (windThree.lengthSq() > 1e-8)
+    windsock.rotation.y = Math.atan2(-windThree.z, windThree.x);
   if (state.vehicleClass !== "Multicopter") {
     const deflection = (name: string) =>
       state.forces.surfaces.find((surface) => surface.name === name)

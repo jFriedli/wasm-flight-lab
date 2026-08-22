@@ -231,12 +231,20 @@ impl VehicleDefinition {
         };
         let forward = definition.motors.remove(0);
         definition.motors = vec![
-            lift_motor(0.41, 0.58, 1.0),
-            lift_motor(0.41, -0.58, -1.0),
-            lift_motor(-0.27, -0.58, 1.0),
-            lift_motor(-0.27, 0.58, -1.0),
+            lift_motor(0.34, 0.58, 1.0),
+            lift_motor(0.34, -0.58, -1.0),
+            lift_motor(-0.34, -0.58, 1.0),
+            lift_motor(-0.34, 0.58, -1.0),
             forward,
         ];
+        let hover_center_x = non_hover_mass_center_x(&definition);
+        for motor in definition
+            .motors
+            .iter_mut()
+            .filter(|motor| motor.role == PropulsionRoleDefinition::Lift)
+        {
+            motor.position_m.x += hover_center_x;
+        }
         definition
     }
     pub fn tiltrotor() -> Self {
@@ -271,6 +279,10 @@ impl VehicleDefinition {
             tilt_motor(-0.30, -0.62, 1.0),
             tilt_motor(-0.30, 0.62, -1.0),
         ];
+        let hover_center_x = non_hover_mass_center_x(&definition);
+        for motor in &mut definition.motors {
+            motor.position_m.x += hover_center_x;
+        }
         definition
     }
     pub fn fixed_wing_trainer() -> Self {
@@ -360,7 +372,7 @@ impl VehicleDefinition {
                     ControlAxisDefinition::Roll,
                     1.0,
                     15.0,
-                    0.06,
+                    0.09,
                     0.0,
                     0.10,
                 ),
@@ -374,7 +386,7 @@ impl VehicleDefinition {
                     ControlAxisDefinition::Roll,
                     -1.0,
                     15.0,
-                    0.06,
+                    0.09,
                     0.0,
                     0.10,
                 ),
@@ -415,7 +427,10 @@ impl VehicleDefinition {
         let motor = |x, y, spin| MotorDefinition {
             position_m: DVec3::new(x, y, 0.0),
             direction_body: -DVec3::Z,
-            base_max_thrust_n: if freestyle { 12.0 } else { 8.0 },
+            // `base_max_thrust_n` is referenced to the 10-inch educational
+            // prop model. The 5-inch prop factor is 0.25, yielding 10 N per
+            // motor at sea level for the freestyle preset.
+            base_max_thrust_n: if freestyle { 40.0 } else { 8.0 },
             max_power_w: if freestyle { 420.0 } else { 220.0 },
             mass_kg: if freestyle { 0.035 } else { 0.045 },
             spin,
@@ -445,7 +460,11 @@ impl VehicleDefinition {
             frame: FrameDefinition {
                 arm_length_m: arm,
                 body_mass_kg: if freestyle { 0.28 } else { 0.40 },
-                body_dimensions_m: DVec3::new(0.30, 0.22, 0.10),
+                body_dimensions_m: if freestyle {
+                    DVec3::new(0.20, 0.14, 0.06)
+                } else {
+                    DVec3::new(0.30, 0.22, 0.10)
+                },
             },
             motors: vec![
                 motor(arm, arm, 1.0),
@@ -457,7 +476,8 @@ impl VehicleDefinition {
                 cells: if freestyle { 6 } else { 4 },
                 capacity_mah: if freestyle { 1300.0 } else { 3000.0 },
                 mass_kg: if freestyle { 0.22 } else { 0.30 },
-                position_m: DVec3::new(-0.03, 0.0, 0.02),
+                // Balance the camera about the symmetric rotor thrust centroid.
+                position_m: DVec3::new(if freestyle { -0.0145454545 } else { -0.0213333333 }, 0.0, 0.02),
                 internal_resistance_ohm: if freestyle { 0.035 } else { 0.045 },
                 max_discharge_c: if freestyle { 75.0 } else { 30.0 },
             },
@@ -688,12 +708,21 @@ impl VehicleDefinition {
                     control_effectiveness: s.control_effectiveness,
                     trim_deflection_rad: s.trim_deflection_deg.to_radians(),
                     servo_rate_rad_s: s.servo_rate_deg_s.to_radians(),
-                    commanded_deflection_rad: s.trim_deflection_deg.to_radians(),
-                    actual_deflection_rad: s.trim_deflection_deg.to_radians(),
+                    commanded_deflection_rad: if self.vehicle_class == VehicleClassDefinition::FixedWing {
+                        s.trim_deflection_deg.to_radians()
+                    } else {
+                        0.0
+                    },
+                    actual_deflection_rad: if self.vehicle_class == VehicleClassDefinition::FixedWing {
+                        s.trim_deflection_deg.to_radians()
+                    } else {
+                        0.0
+                    },
                 })
                 .collect(),
             inertia_kg_m2: inertia,
             battery: self.battery.clone(),
+            body_dimensions_m: self.frame.body_dimensions_m,
         })
     }
 
@@ -829,6 +858,31 @@ pub fn propeller_factor(p: &PropellerDefinition) -> f64 {
         * (f64::from(p.blade_count) / 2.0).powf(0.2)
         * (p.efficiency / 0.72))
         .clamp(0.1, 4.0)
+}
+
+/// Longitudinal balance point of everything not carried by hover propulsion.
+/// Centering symmetric lift units here makes equal hover thrust moment-free.
+fn non_hover_mass_center_x(definition: &VehicleDefinition) -> f64 {
+    let mut mass = definition.frame.body_mass_kg + definition.battery.mass_kg;
+    let mut moment = definition.battery.mass_kg * definition.battery.position_m.x;
+    for payload in &definition.payloads {
+        mass += payload.mass_kg;
+        moment += payload.mass_kg * payload.position_m.x;
+    }
+    for surface in &definition.aero_surfaces {
+        mass += surface.mass_kg;
+        moment += surface.mass_kg * surface.position_m.x;
+    }
+    for motor in definition
+        .motors
+        .iter()
+        .filter(|motor| motor.role == PropulsionRoleDefinition::Forward)
+    {
+        let component_mass = motor.mass_kg + motor.propeller.mass_kg;
+        mass += component_mass;
+        moment += component_mass * motor.position_m.x;
+    }
+    moment / mass
 }
 fn weighted_center(masses: &[ComponentMass]) -> DVec3 {
     let total = masses.iter().map(|m| m.mass_kg).sum::<f64>();

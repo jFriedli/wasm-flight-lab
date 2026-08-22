@@ -335,6 +335,23 @@ mod tests {
         assert!(sim.controller.telemetry.error_rps.x.abs() < 0.7);
     }
     #[test]
+    fn neutral_stick_targets_zero_rate_in_acro_and_level_in_angle() {
+        let mut controller = FlightController::default();
+        let state = State {
+            attitude_body_to_ned: DQuat::from_rotation_y(10.0_f64.to_radians()),
+            ..Default::default()
+        };
+        controller.mode = FlightMode::Acro;
+        controller.update(DVec3::ZERO, 0.4, &state, 0.004);
+        assert_eq!(controller.telemetry.target_rate_rps, DVec3::ZERO);
+        controller.reset();
+        controller.mode = FlightMode::Angle;
+        controller.update(DVec3::ZERO, 0.4, &state, 0.004);
+        assert!(controller.telemetry.target_rate_rps.y < 0.0);
+        assert_eq!(controller.telemetry.target_rate_rps.x, 0.0);
+        assert_eq!(controller.telemetry.target_rate_rps.z, 0.0);
+    }
+    #[test]
     fn rate_controller_brakes_after_stick_release() {
         let mut sim = Simulator::new(beginner_quad());
         sim.set_control(DVec3::new(0.3, 0.0, 0.0), 0.31);

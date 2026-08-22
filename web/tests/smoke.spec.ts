@@ -171,6 +171,33 @@ test("Alpine terrain and navigation instruments initialize", async ({
   expect(errors).toEqual([]);
 });
 
+test("authoritative weather changes local airflow and remains finite", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  await page.goto("/");
+  await page.getByText("ATMOSPHERE", { exact: true }).click();
+  await page.locator("#weather").selectOption("breeze");
+  await expect(page.locator("#windReadout")).toContainText("BREEZE");
+  await expect
+    .poll(async () => {
+      const wind = (await page.locator("#viewport").getAttribute("data-wind"))!
+        .split(",")
+        .map(Number);
+      return Math.hypot(...wind);
+    })
+    .toBeGreaterThan(3);
+  const ground = Number.parseFloat(await page.locator("#speed").innerText());
+  const air = Number.parseFloat(await page.locator("#airspeed").innerText());
+  expect(air).toBeGreaterThan(ground + 2);
+  await page.locator("#airflow").check();
+  expect(errors).toEqual([]);
+});
+
 test("workshop edit reaches preview, persistence, and authoritative flight definition", async ({
   page,
 }) => {

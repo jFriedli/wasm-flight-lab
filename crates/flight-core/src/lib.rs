@@ -4,9 +4,11 @@
 use glam::{DQuat, DVec3};
 use serde::{Deserialize, Serialize};
 
+pub mod atmosphere;
 pub mod control;
 pub mod terrain;
 pub mod vehicle;
+use atmosphere::{WindField, WindSample};
 use control::FlightController;
 use terrain::TerrainDefinition;
 use vehicle::{BatteryDefinition, VehicleDefinition};
@@ -98,6 +100,8 @@ pub struct Vehicle {
     pub aero_surfaces: Vec<AeroSurface>,
     pub inertia_kg_m2: DVec3,
     pub battery: BatteryDefinition,
+    /// Full body dimensions in body X/Y/Z, used for projected-area drag.
+    pub body_dimensions_m: DVec3,
 }
 
 impl Vehicle {
@@ -145,7 +149,7 @@ impl Vehicle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Environment {
     pub density_kg_m3: f64,
-    pub wind_ned_mps: DVec3,
+    pub wind: WindField,
     pub gravity_mps2: f64,
     pub terrain: TerrainDefinition,
 }
@@ -153,7 +157,7 @@ impl Default for Environment {
     fn default() -> Self {
         Self {
             density_kg_m3: SEA_LEVEL_DENSITY,
-            wind_ned_mps: DVec3::ZERO,
+            wind: WindField::default(),
             gravity_mps2: GRAVITY,
             terrain: TerrainDefinition::default(),
         }
@@ -167,9 +171,12 @@ pub struct ForceBreakdown {
     pub lift: DVec3,
     pub drag: DVec3,
     pub torque_body: DVec3,
+    pub propulsion_torque_body: DVec3,
+    pub aerodynamic_torque_body: DVec3,
     pub motor_thrust_ned: Vec<DVec3>,
     pub surface_forces: Vec<SurfaceForce>,
     pub air_velocity_ned: DVec3,
+    pub wind: WindSample,
     pub angle_of_attack_rad: f64,
     pub stalled: bool,
 }
@@ -196,6 +203,24 @@ pub fn local_air_velocity_body(
     offset_body: DVec3,
 ) -> DVec3 {
     cg_air_velocity_body + angular_rate_body.cross(offset_body)
+}
+
+/// Bluff-body drag from the area projected normal to each body axis.
+pub fn body_drag_force_ned(
+    air_velocity_ned: DVec3,
+    attitude_body_to_ned: DQuat,
+    dimensions_m: DVec3,
+    density_kg_m3: f64,
+    drag_coefficient: f64,
+) -> DVec3 {
+    let air_body = attitude_body_to_ned.conjugate() * air_velocity_ned;
+    let area = DVec3::new(
+        dimensions_m.y * dimensions_m.z,
+        dimensions_m.x * dimensions_m.z,
+        dimensions_m.x * dimensions_m.y,
+    );
+    let drag_body = -0.5 * density_kg_m3 * drag_coefficient * area * air_body.abs() * air_body;
+    attitude_body_to_ned * drag_body
 }
 
 pub fn aerodynamic_force(
@@ -482,20 +507,43 @@ impl Simulator {
             let fb = m.direction.normalize_or_zero() * thrust;
             f.thrust += q * fb;
             f.motor_thrust_ned.push(q * fb);
-            f.torque_body += (m.position - com).cross(fb)
+            let motor_torque = (m.position - com).cross(fb)
                 + m.direction.normalize_or_zero() * m.reaction_torque_nm * m.spin * m.actual_output;
+            f.torque_body += motor_torque;
+            f.propulsion_torque_body += motor_torque;
         }
-        let air_ned = self.state.velocity_ned_mps - self.environment.wind_ned_mps;
+        f.wind = self.environment.wind.sample(
+            self.state.position_ned_m,
+            self.state.sim_time_s,
+            &self.environment.terrain,
+        );
+        let air_ned = self.state.velocity_ned_mps - f.wind.combined_ned;
         f.air_velocity_ned = air_ned;
         let air_body = q.conjugate() * air_ned;
+        let aerodynamic_controls = if matches!(
+            self.vehicle.class,
+            VehicleClass::QuadPlane | VehicleClass::Tiltrotor
+        ) {
+            // The same rate/attitude controller effort that allocates rotor
+            // differential is handed to aerodynamic surfaces. Dynamic
+            // pressure naturally fades this authority in and out.
+            self.controller.telemetry.output / self.controller.config.output_limit.max(1e-6)
+        } else {
+            self.control_sticks
+        };
         for surface in &mut self.vehicle.aero_surfaces {
             let control = match surface.control_axis {
                 ControlAxis::None => 0.0,
-                ControlAxis::Roll => self.control_sticks.x,
-                ControlAxis::Pitch => self.control_sticks.y,
-                ControlAxis::Yaw => self.control_sticks.z,
+                ControlAxis::Roll => aerodynamic_controls.x,
+                ControlAxis::Pitch => aerodynamic_controls.y,
+                ControlAxis::Yaw => aerodynamic_controls.z,
             };
-            surface.commanded_deflection_rad = surface.trim_deflection_rad
+            let trim_scale = match self.vehicle.class {
+                VehicleClass::FixedWing => 1.0,
+                VehicleClass::QuadPlane | VehicleClass::Tiltrotor => self.transition_actual,
+                VehicleClass::Multicopter => 0.0,
+            };
+            surface.commanded_deflection_rad = surface.trim_deflection_rad * trim_scale
                 + control.clamp(-1.0, 1.0) * surface.control_sign * surface.max_deflection_rad;
             surface.commanded_deflection_rad = surface
                 .commanded_deflection_rad
@@ -517,7 +565,9 @@ impl Simulator {
             let drag_ned = q * drag_body;
             f.lift += lift_ned;
             f.drag += drag_ned;
-            f.torque_body += (surface.position - com).cross(lift_body + drag_body);
+            let aerodynamic_torque = (surface.position - com).cross(lift_body + drag_body);
+            f.torque_body += aerodynamic_torque;
+            f.aerodynamic_torque_body += aerodynamic_torque;
             if matches!(surface.plane, SurfacePlane::Horizontal) && surface.area_m2 > 0.15 {
                 f.angle_of_attack_rad = angle;
                 f.stalled |= stalled;
@@ -535,12 +585,18 @@ impl Simulator {
                 actual_deflection_rad: surface.actual_deflection_rad,
             });
         }
-        let body_drag_coefficient = if self.vehicle.class == VehicleClass::Multicopter {
-            0.08
+        let body_cd = if self.vehicle.class == VehicleClass::Multicopter {
+            0.9
         } else {
-            0.012
+            0.35
         };
-        f.drag += -air_ned * air_ned.length() * body_drag_coefficient * self.environment.density_kg_m3;
+        f.drag += body_drag_force_ned(
+            air_ned,
+            q,
+            self.vehicle.body_dimensions_m,
+            self.environment.density_kg_m3,
+            body_cd,
+        );
         let accel = (f.gravity + f.thrust + f.lift + f.drag) / mass;
         self.state.velocity_ned_mps += accel * dt;
         self.state.position_ned_m += self.state.velocity_ned_mps * dt;
@@ -1138,5 +1194,259 @@ mod tests {
         assert!(sim.transition_actual < 0.05);
         assert!(sim.vehicle.motors[0].direction.z < -0.99);
         assert!(sim.state.position_ned_m.is_finite());
+    }
+
+    fn equal_hover_pitch_moment(definition: VehicleDefinition) -> f64 {
+        let vehicle = definition.to_vehicle().unwrap();
+        let cg = vehicle.center_of_mass();
+        vehicle
+            .motors
+            .iter()
+            .filter(|motor| motor.role != PropulsionRole::Forward)
+            .map(|motor| {
+                (motor.position - cg)
+                    .cross(motor.hover_direction * motor.max_thrust_n)
+                    .y
+            })
+            .sum()
+    }
+
+    #[test]
+    fn neutral_hover_presets_have_no_pitch_bias() {
+        for definition in [
+            VehicleDefinition::beginner(),
+            VehicleDefinition::freestyle(),
+            VehicleDefinition::quadplane(),
+            VehicleDefinition::tiltrotor(),
+        ] {
+            let moment = equal_hover_pitch_moment(definition.clone());
+            assert!(moment.abs() < 1e-7, "{} pitch moment {moment}", definition.name);
+        }
+    }
+
+    #[test]
+    fn fixed_wing_trim_does_not_leak_into_vtol_hover() {
+        for definition in [VehicleDefinition::quadplane(), VehicleDefinition::tiltrotor()] {
+            let mut sim = Simulator::new(definition.to_vehicle().unwrap());
+            sim.state.position_ned_m.z = -20.0;
+            sim.step(0.004);
+            let elevator = sim
+                .vehicle
+                .aero_surfaces
+                .iter()
+                .find(|surface| surface.name == "Elevator")
+                .unwrap();
+            assert_eq!(elevator.commanded_deflection_rad, 0.0);
+            assert_eq!(elevator.actual_deflection_rad, 0.0);
+        }
+    }
+
+    #[test]
+    fn projected_quad_drag_is_directional_and_physically_sized() {
+        let vehicle = VehicleDefinition::beginner().to_vehicle().unwrap();
+        let forward = body_drag_force_ned(
+            DVec3::X * 20.0,
+            DQuat::IDENTITY,
+            vehicle.body_dimensions_m,
+            SEA_LEVEL_DENSITY,
+            0.9,
+        );
+        let lateral = body_drag_force_ned(
+            DVec3::Y * 20.0,
+            DQuat::IDENTITY,
+            vehicle.body_dimensions_m,
+            SEA_LEVEL_DENSITY,
+            0.9,
+        );
+        assert!(forward.x < 0.0 && lateral.y < 0.0);
+        assert!((forward.x + 4.851).abs() < 0.02, "forward drag {forward:?}");
+        assert!(lateral.length() > forward.length());
+        assert!(forward.length() < vehicle.motors.iter().map(|m| m.max_thrust_n).sum());
+    }
+
+    #[test]
+    fn freestyle_has_more_propulsive_performance_than_beginner() {
+        let beginner = VehicleDefinition::beginner();
+        let freestyle = VehicleDefinition::freestyle();
+        let beginner_metrics = beginner.metrics().unwrap();
+        let freestyle_metrics = freestyle.metrics().unwrap();
+        assert!(
+            freestyle_metrics.thrust_to_weight > beginner_metrics.thrust_to_weight * 1.7,
+            "beginner {} freestyle {}",
+            beginner_metrics.thrust_to_weight,
+            freestyle_metrics.thrust_to_weight
+        );
+        assert!(
+            freestyle.motors[0].spin_up_time_s < beginner.motors[0].spin_up_time_s,
+            "freestyle motor must spool faster"
+        );
+    }
+
+    fn level_translation_benchmark(definition: &VehicleDefinition, tilt_deg: f64) -> (f64, f64) {
+        let vehicle = definition.to_vehicle().unwrap();
+        let horizontal_thrust = vehicle.mass() * GRAVITY * tilt_deg.to_radians().tan();
+        let drag_k =
+            0.5 * SEA_LEVEL_DENSITY * 0.9 * vehicle.body_dimensions_m.y * vehicle.body_dimensions_m.z;
+        let terminal = (horizontal_thrust / drag_k).sqrt();
+        let mut speed = 0.0;
+        let mut time_to_ten = f64::INFINITY;
+        for step in 0..20_000 {
+            speed += ((horizontal_thrust - drag_k * speed * speed) / vehicle.mass()) * 0.004;
+            if speed >= 10.0 && !time_to_ten.is_finite() {
+                time_to_ten = f64::from(step) * 0.004;
+            }
+        }
+        (terminal, time_to_ten)
+    }
+
+    #[test]
+    fn multicopter_translation_benchmarks_are_useful_and_distinct() {
+        let beginner = level_translation_benchmark(&VehicleDefinition::beginner(), 30.0);
+        let freestyle = level_translation_benchmark(&VehicleDefinition::freestyle(), 45.0);
+        assert!(beginner.0 > 20.0 && beginner.1 < 3.0, "beginner {beginner:?}");
+        assert!(
+            freestyle.0 > 35.0 && freestyle.1 < beginner.1,
+            "freestyle {freestyle:?}"
+        );
+        assert!(freestyle.0 > beginner.0 * 1.5);
+    }
+
+    #[test]
+    fn trainer_reaches_a_useful_bank_without_runaway_roll() {
+        let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -100.0;
+        sim.state.velocity_ned_mps = DVec3::X * 16.0;
+        sim.vehicle.motors[0].actual_output = 0.45;
+        let mut peak_rate: f64 = 0.0;
+        for _ in 0..375 {
+            sim.set_control(DVec3::new(0.5, 0.0, 0.0), 0.45);
+            sim.step(0.004);
+            peak_rate = peak_rate.max(sim.state.angular_rate_body_rps.x.abs());
+        }
+        let (_, _, roll) = sim.state.attitude_body_to_ned.to_euler(glam::EulerRot::ZYX);
+        assert!(roll.abs().to_degrees() > 20.0, "bank {} deg", roll.to_degrees());
+        assert!(
+            peak_rate.to_degrees() < 120.0,
+            "roll rate {} deg/s",
+            peak_rate.to_degrees()
+        );
+        for _ in 0..375 {
+            sim.set_control(DVec3::ZERO, 0.45);
+            sim.step(0.004);
+        }
+        assert!(sim.state.angular_rate_body_rps.x.abs() < peak_rate);
+    }
+
+    #[test]
+    fn headwind_and_tailwind_change_authoritative_airspeed() {
+        use atmosphere::{WeatherPreset, WindField};
+        let run = |from_deg: f64| {
+            let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+            sim.state.position_ned_m.z = -100.0;
+            sim.state.velocity_ned_mps = DVec3::X * 15.0;
+            let mut wind = WindField::preset(WeatherPreset::Custom);
+            wind.speed_mps = 5.0;
+            wind.direction_from_deg = from_deg;
+            sim.environment.wind = wind;
+            sim.step(0.004);
+            sim.forces.air_velocity_ned.length()
+        };
+        assert!((run(0.0) - 20.0).abs() < 0.1);
+        assert!((run(180.0) - 10.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn multicopter_wind_response_comes_from_relative_air_drag() {
+        use atmosphere::{WeatherPreset, WindField};
+        let mut sim = Simulator::new(beginner_quad());
+        sim.state.position_ned_m.z = -20.0;
+        let mut wind = WindField::preset(WeatherPreset::Custom);
+        wind.speed_mps = 10.0;
+        wind.direction_from_deg = 270.0;
+        sim.environment.wind = wind;
+        sim.step(0.004);
+        assert!(sim.forces.air_velocity_ned.y < -9.9);
+        assert!(sim.forces.drag.y > 0.0, "drag carries the quad downwind");
+    }
+
+    #[test]
+    fn thermal_airmass_increases_trainer_vertical_support() {
+        use atmosphere::{WeatherPreset, WindField};
+        let run = |north: f64, east: f64| {
+            let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+            let ground = sim.environment.terrain.elevation_m(north, east);
+            sim.state.position_ned_m = DVec3::new(north, east, -ground - 450.0);
+            sim.state.velocity_ned_mps = DVec3::X * 16.0;
+            sim.environment.wind = WindField::preset(WeatherPreset::Soaring);
+            sim.step(0.004);
+            -sim.forces.lift.z
+        };
+        let thermal = run(1_050.0, 850.0);
+        let outside = run(0.0, 0.0);
+        assert!(thermal > outside + 1.0, "thermal {thermal} outside {outside}");
+    }
+
+    #[test]
+    fn ridge_airmass_increases_trainer_vertical_support() {
+        use atmosphere::{WeatherPreset, WindField};
+        let north = 1_200.0;
+        let east = 1_000.0;
+        let terrain = terrain::TerrainDefinition::default();
+        let normal = terrain.normal_up_ned(north, east);
+        let gradient = glam::DVec2::new(normal.x / normal.z, normal.y / normal.z).normalize();
+        let to_deg = gradient.y.atan2(gradient.x).to_degrees();
+        let run = |terrain_flow: bool| {
+            let mut sim = Simulator::new(VehicleDefinition::fixed_wing_trainer().to_vehicle().unwrap());
+            let ground = sim.environment.terrain.elevation_m(north, east);
+            sim.state.position_ned_m = DVec3::new(north, east, -ground - 35.0);
+            sim.state.velocity_ned_mps = DVec3::X * 16.0;
+            let mut wind = WindField::preset(WeatherPreset::Alpine);
+            wind.direction_from_deg = (to_deg + 180.0).rem_euclid(360.0);
+            wind.terrain_flow = terrain_flow;
+            sim.environment.wind = wind;
+            sim.step(0.004);
+            -sim.forces.lift.z
+        };
+        let ridge = run(true);
+        let flat_air = run(false);
+        assert!(ridge > flat_air + 0.2, "ridge {ridge} flat {flat_air}");
+    }
+
+    fn exercise_three_vtol_transitions(definition: VehicleDefinition) -> (f64, f64) {
+        let hover = definition.metrics().unwrap().hover_throttle;
+        let mut sim = Simulator::new(definition.to_vehicle().unwrap());
+        sim.state.position_ned_m.z = -180.0;
+        let mut peak_speed: f64 = 0.0;
+        let mut peak_wing_fraction: f64 = 0.0;
+        for _cycle in 0..3 {
+            sim.set_transition(1.0);
+            for _ in 0..3_500 {
+                sim.set_control(DVec3::ZERO, hover.max(0.56));
+                sim.step(0.004);
+                peak_speed = peak_speed.max(sim.forces.air_velocity_ned.length());
+                peak_wing_fraction =
+                    peak_wing_fraction.max((-sim.forces.lift.z / (sim.vehicle.mass() * GRAVITY)).max(0.0));
+            }
+            sim.set_transition(0.0);
+            for _ in 0..1_500 {
+                sim.set_control(DVec3::ZERO, hover);
+                sim.step(0.004);
+            }
+            assert!(sim.transition_actual < 0.05);
+            assert!(sim.state.position_ned_m.is_finite());
+        }
+        (peak_speed, peak_wing_fraction)
+    }
+
+    #[test]
+    fn quadplane_repeated_transition_cycle_remains_physical() {
+        let (speed, wing_fraction) = exercise_three_vtol_transitions(VehicleDefinition::quadplane());
+        assert!(speed > 9.0 && wing_fraction > 0.3);
+    }
+
+    #[test]
+    fn tiltrotor_repeated_transition_cycle_remains_physical() {
+        let (speed, wing_fraction) = exercise_three_vtol_transitions(VehicleDefinition::tiltrotor());
+        assert!(speed > 10.0 && wing_fraction > 0.3);
     }
 }

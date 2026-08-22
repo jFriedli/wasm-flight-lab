@@ -14,7 +14,7 @@ TypeScript fixed-clock shaping ─► WASM boundary
 
 `flight-core` is browser-independent and tested natively. `flight-wasm` is deliberately thin. Render time never determines physics time: the frontend accumulates elapsed time, caps pathological gaps, and executes 4 ms steps. A dedicated Worker and packed numeric state buffer are planned once sensors and analysis increase bridge traffic; the current small state snapshot keeps the initial implementation inspectable and requires neither SharedArrayBuffer nor cross-origin isolation.
 
-The core owns the versioned `VehicleDefinition`, vehicle class, runtime components, environment, forces, battery state and control allocation. Multicopters route normalized commands through Acro/Angle loops, rate PID and an X mixer. Fixed wings route the same normalized commands to aileron/elevator/rudder deflection and collective throttle to shared propulsion units; they never use the quad mixer. Serialized definitions cross WASM only when a design changes. Compact runtime/aerodynamic telemetry crosses once per rendered frame.
+The core owns the versioned `VehicleDefinition`, vehicle class, runtime components, environment, wind field, forces, battery state and control allocation. Multicopters route normalized commands through Acro/Angle loops, rate PID and an X mixer. Fixed wings route the same normalized commands to aileron/elevator/rudder deflection and collective throttle to shared propulsion units; they never use the quad mixer. Serialized definitions cross WASM only when a design changes. Compact runtime/aerodynamic/atmospheric telemetry crosses once per rendered frame.
 
 Keyboard+mouse and Gamepad are explicit input sources producing one `{throttle, roll, pitch, yaw}` structure. Pointer motion changes a bounded virtual stick; fixed-clock spring, expo and slew processing occur before the WASM call. Sources are selected rather than summed, preventing ambiguous mixed commands.
 
@@ -27,5 +27,7 @@ BUILD keeps a mutable, serializable definition separate from transient `Simulato
 Aerodynamic surfaces and propulsion are shared components. QuadPlane composes horizontal surfaces, one forward propulsor and four vertical propulsors. Tiltrotor uses the same force loop with rate-limited propulsion orientation. There is no hover/cruise physics switch: transition changes allocation and force direction while all forces remain active.
 
 `TerrainDefinition` is authoritative Rust state. Its seeded height/normal queries feed 250 Hz contact and are exported through the thin WASM boundary. The renderer samples that exact function once to construct a 128×128 indexed mesh; landmarks and instanced trees are deterministic presentation layers. The minimap reuses the height sampler and compact per-frame NED position/yaw.
+
+`WindField` samples deterministic base wind, coherent gust, turbulence, terrain-gradient ridge/lee flow and optional thermals from NED position and simulation time. The one combined vector feeds body drag and every surface's local `vCG + ω×r` airflow. The windsock and sparse debug arrows consume the same snapshot; neither owns a visual-only wind model.
 
 Chase, fixed-mount FPV and free-orbit cameras consume render state and never feed physics. The FPV transform can later come from a BUILD camera component. Future sensors have independent rate schedulers.

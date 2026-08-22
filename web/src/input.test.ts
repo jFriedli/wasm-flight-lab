@@ -37,6 +37,15 @@ describe("input pipeline", () => {
         expo: 0,
       }),
     ).toBeCloseTo(0.5556, 3));
+  it("maps every calibrated center to exact neutral", () => {
+    for (const axis of ["roll", "pitch", "yaw"] as const)
+      expect(
+        normalizeAxis(
+          DEFAULT_CALIBRATION.axes[axis].center,
+          DEFAULT_CALIBRATION.axes[axis],
+        ),
+      ).toBe(0);
+  });
   it("fails safe on invalid gamepad values", () => {
     const c = gamepadCommands({ axes: [Number.NaN] }, DEFAULT_CALIBRATION);
     expect(c.roll).toBe(0);
@@ -60,6 +69,15 @@ describe("input pipeline", () => {
       roll: 0.4,
       pitch: -0.4,
     });
+  });
+  it("recenters nose-up and nose-down displacement symmetrically to exact zero", () => {
+    for (const pitch of [-1, 1]) {
+      let stick = { roll: 0, pitch };
+      for (let i = 0; i < 250; i++)
+        stick = springVirtualStick(stick, 1.4, 0.004);
+      expect(Object.is(stick.pitch, -0)).toBe(false);
+      expect(stick.pitch).toBe(0);
+    }
   });
   it("rejects malformed persisted data", () => {
     const c = loadCalibration({ getItem: () => "{broken" });
